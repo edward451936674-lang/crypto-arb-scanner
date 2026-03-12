@@ -49,6 +49,7 @@ class LighterClient(ExchangeClient):
                     funding_rate_source="estimated_current",
                     funding_time_ms=self._to_int(stats.get("funding_timestamp")),
                     next_funding_time_ms=None,
+                    funding_period_hours=4,
                     timestamp_ms=timestamp_ms,
                     raw=stats,
                 )

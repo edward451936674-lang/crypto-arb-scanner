@@ -59,6 +59,7 @@ class HyperliquidClient(ExchangeClient):
                     funding_rate_source="current_8h",
                     funding_time_ms=None,
                     next_funding_time_ms=None,
+                    funding_period_hours=8,
                     timestamp_ms=now_ms,
                     raw={"asset": asset, "context": context},
                 )
