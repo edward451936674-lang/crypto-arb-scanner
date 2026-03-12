@@ -4,6 +4,14 @@ from pydantic import BaseModel, Field
 
 
 class MarketSnapshot(BaseModel):
+    """Normalized perpetual market snapshot.
+
+    Funding timestamp semantics:
+    - funding_time_ms: settlement timestamp for the funding rate in this snapshot
+    - next_funding_time_ms: next known settlement timestamp (if the venue provides it)
+    - funding_period_hours: cadence between settlements for the venue
+    """
+
     exchange: str
     venue_type: Literal["cex", "dex"]
     base_symbol: str
