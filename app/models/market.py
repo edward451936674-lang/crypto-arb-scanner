@@ -16,6 +16,7 @@ class MarketSnapshot(BaseModel):
     funding_rate_source: str | None = None
     funding_time_ms: int | None = None
     next_funding_time_ms: int | None = None
+    funding_period_hours: int | None = None
     timestamp_ms: int
     raw: dict[str, Any] = Field(default_factory=dict)
 
