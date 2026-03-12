@@ -37,6 +37,7 @@ class BinanceClient(ExchangeClient):
             funding_rate=self._to_float(payload.get("lastFundingRate")),
             funding_rate_source="latest_reported",
             next_funding_time_ms=self._to_int(payload.get("nextFundingTime")),
+            funding_period_hours=8,
             timestamp_ms=int(payload["time"]),
             raw=payload,
         )
