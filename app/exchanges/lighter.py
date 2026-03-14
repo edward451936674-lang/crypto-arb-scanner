@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import time
 from typing import Any
 
+import certifi
+import httpx
 import websockets
 
+from app.core.config import Settings
 from app.core.symbols import SymbolSpec
 from app.models.market import MarketSnapshot
 
@@ -16,6 +20,21 @@ from .base import ExchangeClient, ExchangeClientError
 class LighterClient(ExchangeClient):
     name = "lighter"
     venue_type = "dex"
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self._ca_file = certifi.where()
+        self._ssl_context = ssl.create_default_context(cafile=self._ca_file)
+        # Keep trust_env=True so existing proxy/env behavior remains intact.
+        self._lighter_http = httpx.AsyncClient(
+            timeout=settings.request_timeout_seconds,
+            headers={"User-Agent": "crypto-arb-scanner/0.1"},
+            verify=self._ssl_context,
+            trust_env=True,
+        )
+
+    async def aclose(self) -> None:
+        await asyncio.gather(super().aclose(), self._lighter_http.aclose())
 
     async def fetch_snapshots(self, specs: list[SymbolSpec]) -> list[MarketSnapshot]:
         market_map = await self._fetch_market_id_map()
@@ -49,6 +68,7 @@ class LighterClient(ExchangeClient):
                     funding_rate_source="estimated_current",
                     funding_time_ms=self._to_int(stats.get("funding_timestamp")),
                     next_funding_time_ms=None,
+                    funding_period_hours=4,
                     timestamp_ms=timestamp_ms,
                     raw=stats,
                 )
@@ -57,7 +77,7 @@ class LighterClient(ExchangeClient):
         return snapshots
 
     async def _fetch_market_id_map(self) -> dict[str, int]:
-        response = await self.http.get(self.settings.lighter_markets_url)
+        response = await self._lighter_http.get(self.settings.lighter_markets_url)
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, list):
@@ -77,7 +97,12 @@ class LighterClient(ExchangeClient):
         collected: dict[str, dict[str, Any]] = {}
         pending = set(wanted_ids)
 
-        async with websockets.connect(self.settings.lighter_ws_url, ping_interval=20, close_timeout=1) as ws:
+        async with websockets.connect(
+            self.settings.lighter_ws_url,
+            ping_interval=20,
+            close_timeout=1,
+            ssl=self._ssl_context,
+        ) as ws:
             for market_id in wanted_ids:
                 await ws.send(json.dumps({"type": "subscribe", "channel": f"market_stats/{market_id}"}))
 
