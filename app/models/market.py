@@ -59,6 +59,10 @@ class Opportunity(BaseModel):
     hourly_funding_rate_diff: float | None = None
     hourly_funding_spread_bps: float | None = None
     estimated_edge_bps: float
+    holding_hours: int
+    expected_funding_edge_bps: float
+    estimated_fee_bps: float
+    net_edge_bps: float
 
 
 class OpportunitiesResponse(BaseModel):

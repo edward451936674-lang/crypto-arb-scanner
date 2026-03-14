@@ -30,7 +30,14 @@ MAJOR_SYMBOL_ALLOWLIST = [
 
 MIN_PRICE_SPREAD_BPS = 5.0
 MIN_HOURLY_FUNDING_SPREAD_BPS = 2.0
+DEFAULT_HOLDING_HOURS = 8
 BPS_MULTIPLIER = 10_000
+EXCHANGE_FEE_BPS = {
+    "binance": 5.0,
+    "okx": 5.0,
+    "hyperliquid": 4.0,
+    "lighter": 6.0,
+}
 
 
 class ArbitrageScannerService:
@@ -52,7 +59,7 @@ class ArbitrageScannerService:
         for symbol_snapshots in grouped.values():
             opportunities.extend(self._build_symbol_opportunities(symbol_snapshots))
 
-        opportunities.sort(key=lambda item: (item.estimated_edge_bps, item.price_spread_bps), reverse=True)
+        opportunities.sort(key=lambda item: item.net_edge_bps, reverse=True)
         return opportunities
 
     def _build_symbol_opportunities(self, snapshots: list[MarketSnapshot]) -> list[Opportunity]:
@@ -93,7 +100,20 @@ class ArbitrageScannerService:
 
         estimated_edge_bps = price_spread_bps + (hourly_funding_spread_bps or 0.0)
 
-        if price_spread_bps < MIN_PRICE_SPREAD_BPS and abs(hourly_funding_spread_bps or 0.0) < MIN_HOURLY_FUNDING_SPREAD_BPS:
+        if (
+            price_spread_bps < MIN_PRICE_SPREAD_BPS
+            and abs(hourly_funding_spread_bps or 0.0) < MIN_HOURLY_FUNDING_SPREAD_BPS
+        ):
+            return None
+
+        holding_hours = DEFAULT_HOLDING_HOURS
+        expected_funding_edge_bps = (hourly_funding_spread_bps or 0.0) * holding_hours
+        long_fee_bps = EXCHANGE_FEE_BPS.get(long_snapshot.exchange.lower(), 0.0)
+        short_fee_bps = EXCHANGE_FEE_BPS.get(short_snapshot.exchange.lower(), 0.0)
+        estimated_fee_bps = long_fee_bps + short_fee_bps
+        net_edge_bps = price_spread_bps + expected_funding_edge_bps - estimated_fee_bps
+
+        if net_edge_bps <= 0:
             return None
 
         return Opportunity(
@@ -115,6 +135,10 @@ class ArbitrageScannerService:
             hourly_funding_rate_diff=hourly_funding_rate_diff,
             hourly_funding_spread_bps=hourly_funding_spread_bps,
             estimated_edge_bps=estimated_edge_bps,
+            holding_hours=holding_hours,
+            expected_funding_edge_bps=expected_funding_edge_bps,
+            estimated_fee_bps=estimated_fee_bps,
+            net_edge_bps=net_edge_bps,
         )
 
     @staticmethod
