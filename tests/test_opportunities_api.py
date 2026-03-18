@@ -50,6 +50,9 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert item["price_spread_bps"] > 0
     assert "estimated_edge_bps" in item
     assert "net_edge_bps" in item
+    assert "long_hourly_funding_rate" in item
+    assert "short_hourly_funding_rate" in item
+    assert "hourly_funding_spread_bps" in item
     assert item["holding_hours"] == 8
     assert item["estimated_fee_bps"] == 10.0
     assert item["net_edge_bps"] > 0

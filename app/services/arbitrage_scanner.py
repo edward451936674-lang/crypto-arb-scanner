@@ -89,14 +89,17 @@ class ArbitrageScannerService:
         price_spread_abs = short_price - long_price
         price_spread_bps = (price_spread_abs / midpoint) * BPS_MULTIPLIER
 
-        long_hourly_rate = self._hourly_funding_rate(long_snapshot)
-        short_hourly_rate = self._hourly_funding_rate(short_snapshot)
+        long_hourly_rate = long_snapshot.hourly_funding_rate
+        short_hourly_rate = short_snapshot.hourly_funding_rate
 
         funding_rate_diff = self._optional_diff(short_snapshot.funding_rate, long_snapshot.funding_rate)
         funding_spread_bps = self._to_bps(funding_rate_diff)
 
         hourly_funding_rate_diff = self._optional_diff(short_hourly_rate, long_hourly_rate)
-        hourly_funding_spread_bps = self._to_bps(hourly_funding_rate_diff)
+        hourly_funding_spread_bps = self._optional_diff(
+            short_snapshot.hourly_funding_rate_bps,
+            long_snapshot.hourly_funding_rate_bps,
+        )
 
         estimated_edge_bps = price_spread_bps + (hourly_funding_spread_bps or 0.0)
 
@@ -140,13 +143,6 @@ class ArbitrageScannerService:
             estimated_fee_bps=estimated_fee_bps,
             net_edge_bps=net_edge_bps,
         )
-
-    @staticmethod
-    def _hourly_funding_rate(snapshot: MarketSnapshot) -> float | None:
-        """Normalize funding rate to hourly terms for cross-venue comparability."""
-        if snapshot.funding_rate is None or snapshot.funding_period_hours in (None, 0):
-            return None
-        return snapshot.funding_rate / snapshot.funding_period_hours
 
     @staticmethod
     def _optional_diff(left: float | None, right: float | None) -> float | None:
