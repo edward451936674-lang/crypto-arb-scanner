@@ -17,7 +17,8 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
                     normalized_symbol="BTC-USDT-PERP",
                     instrument_id="BTCUSDT",
                     mark_price=100.0,
-                    funding_rate=-0.01,
+                    funding_rate=-0.001,
+                    funding_rate_source="latest_reported",
                     funding_period_hours=8,
                     timestamp_ms=1710000100000,
                 ),
@@ -28,7 +29,8 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
                     normalized_symbol="BTC-USDT-PERP",
                     instrument_id="BTC-USDT-SWAP",
                     mark_price=101.0,
-                    funding_rate=0.01,
+                    funding_rate=0.001,
+                    funding_rate_source="current",
                     funding_period_hours=8,
                     timestamp_ms=1710000100000,
                 ),
@@ -56,6 +58,11 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert item["holding_hours"] == 8
     assert item["estimated_fee_bps"] == 10.0
     assert item["net_edge_bps"] > 0
+    assert "funding_confidence_score" in item
+    assert item["funding_confidence_label"] == "high"
+    assert "risk_adjusted_edge_bps" in item
+    assert "risk_flags" in item
+    assert "mixed_funding_sources" in item["risk_flags"]
 
 
 def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
@@ -71,6 +78,7 @@ def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
                     instrument_id="BTCUSDT",
                     mark_price=100.0,
                     funding_rate=0.0,
+                    funding_rate_source="latest_reported",
                     funding_period_hours=8,
                     timestamp_ms=1710000100000,
                 ),
@@ -82,6 +90,47 @@ def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
                     instrument_id="BTC-USDT-SWAP",
                     mark_price=100.06,
                     funding_rate=0.0,
+                    funding_rate_source="current",
+                    funding_period_hours=8,
+                    timestamp_ms=1710000100000,
+                ),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert response["opportunities"] == []
+
+
+def test_get_opportunities_filters_low_confidence_funding(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                MarketSnapshot(
+                    exchange="lighter",
+                    venue_type="dex",
+                    base_symbol="BTC",
+                    normalized_symbol="BTC-USDT-PERP",
+                    instrument_id="1",
+                    mark_price=100.0,
+                    funding_rate=-0.0004,
+                    funding_rate_source="estimated_current",
+                    funding_period_hours=4,
+                    timestamp_ms=1710000100000,
+                ),
+                MarketSnapshot(
+                    exchange="okx",
+                    venue_type="cex",
+                    base_symbol="BTC",
+                    normalized_symbol="BTC-USDT-PERP",
+                    instrument_id="BTC-USDT-SWAP",
+                    mark_price=101.0,
+                    funding_rate=0.0004,
+                    funding_rate_source="last_settled_fallback",
                     funding_period_hours=8,
                     timestamp_ms=1710000100000,
                 ),

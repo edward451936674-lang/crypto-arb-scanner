@@ -30,13 +30,23 @@ MAJOR_SYMBOL_ALLOWLIST = [
 
 MIN_PRICE_SPREAD_BPS = 5.0
 MIN_HOURLY_FUNDING_SPREAD_BPS = 2.0
+MIN_NET_EDGE_BPS = 5.0
+MAX_ABS_HOURLY_FUNDING_BPS = 5.0
 DEFAULT_HOLDING_HOURS = 8
+MAX_OPPORTUNITIES_PER_SYMBOL = 3
 BPS_MULTIPLIER = 10_000
 EXCHANGE_FEE_BPS = {
     "binance": 5.0,
     "okx": 5.0,
     "hyperliquid": 4.0,
     "lighter": 6.0,
+}
+FUNDING_SOURCE_CONFIDENCE = {
+    "current": 0.9,
+    "current_8h": 0.9,
+    "latest_reported": 0.9,
+    "estimated_current": 0.6,
+    "last_settled_fallback": 0.5,
 }
 
 
@@ -59,8 +69,11 @@ class ArbitrageScannerService:
         for symbol_snapshots in grouped.values():
             opportunities.extend(self._build_symbol_opportunities(symbol_snapshots))
 
-        opportunities.sort(key=lambda item: item.net_edge_bps, reverse=True)
-        return opportunities
+        opportunities.sort(
+            key=lambda item: (item.risk_adjusted_edge_bps, item.net_edge_bps),
+            reverse=True,
+        )
+        return self._limit_opportunities_per_symbol(opportunities)
 
     def _build_symbol_opportunities(self, snapshots: list[MarketSnapshot]) -> list[Opportunity]:
         opportunities: list[Opportunity] = []
@@ -116,7 +129,18 @@ class ArbitrageScannerService:
         estimated_fee_bps = long_fee_bps + short_fee_bps
         net_edge_bps = price_spread_bps + expected_funding_edge_bps - estimated_fee_bps
 
-        if net_edge_bps <= 0:
+        funding_confidence_score = self._funding_confidence_score(long_snapshot, short_snapshot)
+        funding_confidence_label = self._funding_confidence_label(funding_confidence_score)
+        risk_flags = self._risk_flags(long_snapshot, short_snapshot, funding_confidence_score)
+        risk_adjusted_edge_bps = net_edge_bps * funding_confidence_score
+
+        if (
+            net_edge_bps <= 0
+            or net_edge_bps < MIN_NET_EDGE_BPS
+            or funding_confidence_score < 0.5
+            or abs(long_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS
+            or abs(short_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS
+        ):
             return None
 
         return Opportunity(
@@ -142,7 +166,69 @@ class ArbitrageScannerService:
             expected_funding_edge_bps=expected_funding_edge_bps,
             estimated_fee_bps=estimated_fee_bps,
             net_edge_bps=net_edge_bps,
+            funding_confidence_score=funding_confidence_score,
+            funding_confidence_label=funding_confidence_label,
+            risk_adjusted_edge_bps=risk_adjusted_edge_bps,
+            risk_flags=risk_flags,
         )
+
+    def _funding_confidence_score(
+        self,
+        long_snapshot: MarketSnapshot,
+        short_snapshot: MarketSnapshot,
+    ) -> float:
+        base_score = min(
+            self._funding_source_score(long_snapshot.funding_rate_source),
+            self._funding_source_score(short_snapshot.funding_rate_source),
+        )
+        if long_snapshot.funding_period_hours != short_snapshot.funding_period_hours:
+            base_score -= 0.1
+        return max(0.0, min(1.0, base_score))
+
+    @staticmethod
+    def _funding_source_score(funding_rate_source: str | None) -> float:
+        if funding_rate_source is None:
+            return 0.2
+        return FUNDING_SOURCE_CONFIDENCE.get(funding_rate_source, 0.2)
+
+    @staticmethod
+    def _funding_confidence_label(funding_confidence_score: float) -> str:
+        if funding_confidence_score >= 0.8:
+            return "high"
+        if funding_confidence_score >= 0.55:
+            return "medium"
+        return "low"
+
+    def _risk_flags(
+        self,
+        long_snapshot: MarketSnapshot,
+        short_snapshot: MarketSnapshot,
+        funding_confidence_score: float,
+    ) -> list[str]:
+        flags: list[str] = []
+        if long_snapshot.funding_rate_source != short_snapshot.funding_rate_source:
+            flags.append("mixed_funding_sources")
+        if long_snapshot.funding_period_hours != short_snapshot.funding_period_hours:
+            flags.append("different_funding_periods")
+        if abs(long_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS:
+            flags.append("high_long_hourly_funding")
+        if abs(short_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS:
+            flags.append("high_short_hourly_funding")
+        if funding_confidence_score < 0.55:
+            flags.append("low_confidence_funding")
+        return flags
+
+    @staticmethod
+    def _limit_opportunities_per_symbol(opportunities: list[Opportunity]) -> list[Opportunity]:
+        kept_counts: dict[str, int] = {}
+        limited: list[Opportunity] = []
+        for opportunity in opportunities:
+            symbol_count = kept_counts.get(opportunity.symbol, 0)
+            if symbol_count >= MAX_OPPORTUNITIES_PER_SYMBOL:
+                continue
+            kept_counts[opportunity.symbol] = symbol_count + 1
+            limited.append(opportunity)
+        return limited
 
     @staticmethod
     def _optional_diff(left: float | None, right: float | None) -> float | None:

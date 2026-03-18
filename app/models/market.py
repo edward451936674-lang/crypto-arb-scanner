@@ -94,6 +94,10 @@ class Opportunity(BaseModel):
     expected_funding_edge_bps: float
     estimated_fee_bps: float
     net_edge_bps: float
+    funding_confidence_score: float
+    funding_confidence_label: str
+    risk_adjusted_edge_bps: float
+    risk_flags: list[str] = Field(default_factory=list)
 
 
 class OpportunitiesResponse(BaseModel):
