@@ -137,7 +137,7 @@ class ArbitrageScannerService:
         if (
             net_edge_bps <= 0
             or net_edge_bps < MIN_NET_EDGE_BPS
-            or funding_confidence_score < 0.5
+            or funding_confidence_label == "low"
             or abs(long_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS
             or abs(short_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS
         ):
