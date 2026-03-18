@@ -98,6 +98,9 @@ class Opportunity(BaseModel):
     funding_confidence_label: str
     risk_adjusted_edge_bps: float
     risk_flags: list[str] = Field(default_factory=list)
+    opportunity_grade: str
+    is_tradable: bool
+    reject_reasons: list[str] = Field(default_factory=list)
 
 
 class OpportunitiesResponse(BaseModel):

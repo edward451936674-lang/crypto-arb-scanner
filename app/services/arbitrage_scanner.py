@@ -30,8 +30,10 @@ MAJOR_SYMBOL_ALLOWLIST = [
 
 MIN_PRICE_SPREAD_BPS = 5.0
 MIN_HOURLY_FUNDING_SPREAD_BPS = 2.0
-MIN_NET_EDGE_BPS = 5.0
 MAX_ABS_HOURLY_FUNDING_BPS = 5.0
+ABNORMAL_ABS_HOURLY_FUNDING_BPS = 3.0
+MIN_WATCHLIST_NET_EDGE_BPS = 5.0
+MIN_TRADABLE_NET_EDGE_BPS = 8.0
 DEFAULT_HOLDING_HOURS = 8
 MAX_OPPORTUNITIES_PER_SYMBOL = 3
 BPS_MULTIPLIER = 10_000
@@ -70,7 +72,7 @@ class ArbitrageScannerService:
             opportunities.extend(self._build_symbol_opportunities(symbol_snapshots))
 
         opportunities.sort(
-            key=lambda item: (item.risk_adjusted_edge_bps, item.net_edge_bps),
+            key=lambda item: (item.is_tradable, item.risk_adjusted_edge_bps, item.net_edge_bps),
             reverse=True,
         )
         return self._limit_opportunities_per_symbol(opportunities)
@@ -133,14 +135,19 @@ class ArbitrageScannerService:
         funding_confidence_label = self._funding_confidence_label(funding_confidence_score)
         risk_flags = self._risk_flags(long_snapshot, short_snapshot, funding_confidence_score)
         risk_adjusted_edge_bps = net_edge_bps * funding_confidence_score
+        opportunity_grade = self._opportunity_grade(
+            net_edge_bps,
+            funding_confidence_score,
+            risk_flags,
+        )
+        is_tradable = opportunity_grade == "tradable"
+        reject_reasons = [] if is_tradable else self._reject_reasons(
+            net_edge_bps,
+            funding_confidence_score,
+            risk_flags,
+        )
 
-        if (
-            net_edge_bps <= 0
-            or net_edge_bps < MIN_NET_EDGE_BPS
-            or funding_confidence_label == "low"
-            or abs(long_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS
-            or abs(short_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS
-        ):
+        if opportunity_grade == "discard":
             return None
 
         return Opportunity(
@@ -170,6 +177,9 @@ class ArbitrageScannerService:
             funding_confidence_label=funding_confidence_label,
             risk_adjusted_edge_bps=risk_adjusted_edge_bps,
             risk_flags=risk_flags,
+            opportunity_grade=opportunity_grade,
+            is_tradable=is_tradable,
+            reject_reasons=reject_reasons,
         )
 
     def _funding_confidence_score(
@@ -214,9 +224,57 @@ class ArbitrageScannerService:
             flags.append("high_long_hourly_funding")
         if abs(short_snapshot.hourly_funding_rate_bps or 0.0) > MAX_ABS_HOURLY_FUNDING_BPS:
             flags.append("high_short_hourly_funding")
+        if (
+            abs(long_snapshot.hourly_funding_rate_bps or 0.0) > ABNORMAL_ABS_HOURLY_FUNDING_BPS
+            or abs(short_snapshot.hourly_funding_rate_bps or 0.0) > ABNORMAL_ABS_HOURLY_FUNDING_BPS
+        ):
+            flags.append("abnormal_hourly_funding")
         if funding_confidence_score < 0.55:
             flags.append("low_confidence_funding")
         return flags
+
+    @staticmethod
+    def _opportunity_grade(
+        net_edge_bps: float,
+        funding_confidence_score: float,
+        risk_flags: list[str],
+    ) -> str:
+        if (
+            net_edge_bps <= 0
+            or funding_confidence_score < 0.5
+            or "abnormal_hourly_funding" in risk_flags
+            or net_edge_bps < MIN_WATCHLIST_NET_EDGE_BPS
+        ):
+            return "discard"
+        if (
+            net_edge_bps >= MIN_TRADABLE_NET_EDGE_BPS
+            and funding_confidence_score >= 0.8
+            and "abnormal_hourly_funding" not in risk_flags
+            and len(risk_flags) < 3
+        ):
+            return "tradable"
+        return "watchlist"
+
+    @staticmethod
+    def _reject_reasons(
+        net_edge_bps: float,
+        funding_confidence_score: float,
+        risk_flags: list[str],
+    ) -> list[str]:
+        reject_reasons: list[str] = []
+        if net_edge_bps < MIN_TRADABLE_NET_EDGE_BPS:
+            reject_reasons.append("insufficient_net_edge")
+        if funding_confidence_score < 0.5 and "low_confidence_funding" not in reject_reasons:
+            reject_reasons.append("low_confidence_funding")
+        for risk_flag in risk_flags:
+            if risk_flag in {
+                "mixed_funding_sources",
+                "low_confidence_funding",
+                "different_funding_periods",
+                "abnormal_hourly_funding",
+            } and risk_flag not in reject_reasons:
+                reject_reasons.append(risk_flag)
+        return reject_reasons
 
     @staticmethod
     def _limit_opportunities_per_symbol(opportunities: list[Opportunity]) -> list[Opportunity]:

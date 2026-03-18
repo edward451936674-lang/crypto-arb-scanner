@@ -63,6 +63,9 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert "risk_adjusted_edge_bps" in item
     assert "risk_flags" in item
     assert "mixed_funding_sources" in item["risk_flags"]
+    assert item["opportunity_grade"] == "tradable"
+    assert item["is_tradable"] is True
+    assert item["reject_reasons"] == []
 
 
 def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
@@ -143,3 +146,47 @@ def test_get_opportunities_filters_low_confidence_funding(monkeypatch) -> None:
     response = asyncio.run(get_opportunities(symbols="BTC"))
 
     assert response["opportunities"] == []
+
+
+def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                MarketSnapshot(
+                    exchange="binance",
+                    venue_type="cex",
+                    base_symbol="BTC",
+                    normalized_symbol="BTC-USDT-PERP",
+                    instrument_id="BTCUSDT",
+                    mark_price=100.0,
+                    funding_rate=-0.0008,
+                    funding_rate_source="estimated_current",
+                    funding_period_hours=8,
+                    timestamp_ms=1710000100000,
+                ),
+                MarketSnapshot(
+                    exchange="okx",
+                    venue_type="cex",
+                    base_symbol="BTC",
+                    normalized_symbol="BTC-USDT-PERP",
+                    instrument_id="BTC-USDT-SWAP",
+                    mark_price=100.2,
+                    funding_rate=0.0008,
+                    funding_rate_source="current",
+                    funding_period_hours=8,
+                    timestamp_ms=1710000100000,
+                ),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    assert item["opportunity_grade"] == "watchlist"
+    assert item["is_tradable"] is False
+    assert item["reject_reasons"] == ["mixed_funding_sources"]
