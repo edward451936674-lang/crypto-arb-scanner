@@ -241,7 +241,7 @@ class ArbitrageScannerService:
             return "A"
         if risk_adjusted_edge_bps >= 7:
             return "B"
-        if risk_adjusted_edge_bps >= 5:
+        if risk_adjusted_edge_bps >= 3:
             return "watchlist"
         return "discard"
 
