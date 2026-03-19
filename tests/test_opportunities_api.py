@@ -67,7 +67,7 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert "risk_adjusted_edge_bps" in item
     assert "risk_flags" in item
     assert "mixed_funding_sources" in item["risk_flags"]
-    assert item["opportunity_grade"] == "A"
+    assert item["opportunity_grade"] == "tradable"
     assert item["is_tradable"] is True
     assert item["reject_reasons"] == []
     assert item["position_size_multiplier"] == item["funding_confidence_score"]
@@ -152,7 +152,7 @@ def test_get_opportunities_keeps_low_confidence_funding_when_edge_is_strong(monk
 
     assert len(response["opportunities"]) == 1
     item = response["opportunities"][0]
-    assert item["opportunity_grade"] == "A"
+    assert item["opportunity_grade"] == "tradable"
     assert item["is_tradable"] is True
     assert "low_confidence_funding" in item["risk_flags"]
     assert item["position_size_multiplier"] == item["funding_confidence_score"]
@@ -205,4 +205,4 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
     assert item["is_tradable"] is False
     assert item["position_size_multiplier"] == item["funding_confidence_score"]
     assert "mixed_funding_sources" in item["reject_reasons"]
-    assert "insufficient_net_edge" in item["reject_reasons"]
+    assert "insufficient_risk_adjusted_edge" in item["reject_reasons"]

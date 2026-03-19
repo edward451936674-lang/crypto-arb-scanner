@@ -135,8 +135,8 @@ class ArbitrageScannerService:
         funding_confidence_label = self._funding_confidence_label(funding_confidence_score)
         risk_flags = self._risk_flags(long_snapshot, short_snapshot, funding_confidence_score)
         risk_adjusted_edge_bps = net_edge_bps * funding_confidence_score
-        opportunity_grade = self._opportunity_grade(risk_adjusted_edge_bps)
         is_tradable = risk_adjusted_edge_bps >= 8
+        opportunity_grade = self._opportunity_grade(risk_adjusted_edge_bps, is_tradable)
         reject_reasons = [] if is_tradable else self._reject_reasons(
             risk_adjusted_edge_bps,
             risk_flags,
@@ -236,11 +236,9 @@ class ArbitrageScannerService:
         return flags
 
     @staticmethod
-    def _opportunity_grade(risk_adjusted_edge_bps: float) -> str:
-        if risk_adjusted_edge_bps >= 10:
-            return "A"
-        if risk_adjusted_edge_bps >= 7:
-            return "B"
+    def _opportunity_grade(risk_adjusted_edge_bps: float, is_tradable: bool) -> str:
+        if is_tradable:
+            return "tradable"
         if risk_adjusted_edge_bps >= 3:
             return "watchlist"
         return "discard"
@@ -252,7 +250,7 @@ class ArbitrageScannerService:
     ) -> list[str]:
         reject_reasons: list[str] = []
         if risk_adjusted_edge_bps < 8:
-            reject_reasons.append("insufficient_net_edge")
+            reject_reasons.append("insufficient_risk_adjusted_edge")
         for risk_flag in risk_flags:
             if risk_flag in {
                 "mixed_funding_sources",
