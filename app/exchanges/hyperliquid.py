@@ -59,6 +59,9 @@ class HyperliquidClient(ExchangeClient):
                     funding_rate_source="current_8h",
                     funding_time_ms=None,
                     next_funding_time_ms=None,
+                    funding_period_hours=8,
+                    open_interest_usd=self._to_float(context.get("openInterest")),
+                    quote_volume_24h_usd=self._to_float(context.get("dayNtlVlm")),
                     timestamp_ms=now_ms,
                     raw={"asset": asset, "context": context},
                 )
