@@ -32,6 +32,7 @@ MIN_PRICE_SPREAD_BPS = 5.0
 MIN_HOURLY_FUNDING_SPREAD_BPS = 2.0
 MAX_ABS_HOURLY_FUNDING_BPS = 5.0
 ABNORMAL_ABS_HOURLY_FUNDING_BPS = 3.0
+BASE_POSITION_PCT = 0.10
 MIN_WATCHLIST_NET_EDGE_BPS = 5.0
 MIN_TRADABLE_NET_EDGE_BPS = 8.0
 DEFAULT_HOLDING_HOURS = 8
@@ -141,6 +142,13 @@ class ArbitrageScannerService:
             risk_adjusted_edge_bps,
             risk_flags,
         )
+        suggested_position_pct = self._suggested_position_pct(
+            funding_confidence_score,
+            funding_confidence_label,
+            risk_flags,
+        )
+        max_position_pct = self._max_position_pct(opportunity_grade)
+        execution_mode = self._execution_mode(opportunity_grade, risk_adjusted_edge_bps)
 
         if opportunity_grade == "discard":
             return None
@@ -176,6 +184,9 @@ class ArbitrageScannerService:
             is_tradable=is_tradable,
             reject_reasons=reject_reasons,
             position_size_multiplier=funding_confidence_score,
+            suggested_position_pct=suggested_position_pct,
+            max_position_pct=max_position_pct,
+            execution_mode=execution_mode,
         )
 
     def _funding_confidence_score(
@@ -263,6 +274,39 @@ class ArbitrageScannerService:
             } and risk_flag not in reject_reasons:
                 reject_reasons.append(risk_flag)
         return reject_reasons
+
+    @staticmethod
+    def _suggested_position_pct(
+        position_size_multiplier: float,
+        funding_confidence_label: str,
+        risk_flags: list[str],
+    ) -> float:
+        liquidity_factor = ArbitrageScannerService._liquidity_factor(risk_flags)
+        risk_factor = 0.5 if funding_confidence_label == "low" else 1.0
+        suggested_position_pct = BASE_POSITION_PCT * position_size_multiplier * liquidity_factor * risk_factor
+        return max(0.0, min(BASE_POSITION_PCT, suggested_position_pct))
+
+    @staticmethod
+    def _liquidity_factor(risk_flags: list[str]) -> float:
+        if "low_open_interest" in risk_flags:
+            return 0.3
+        if "missing_liquidity_data" in risk_flags:
+            return 0.5
+        return 1.0
+
+    @staticmethod
+    def _max_position_pct(opportunity_grade: str) -> float:
+        if opportunity_grade == "tradable":
+            return 0.10
+        return 0.03
+
+    @staticmethod
+    def _execution_mode(opportunity_grade: str, risk_adjusted_edge_bps: float) -> str:
+        if opportunity_grade == "tradable":
+            return "normal"
+        if opportunity_grade == "watchlist" and risk_adjusted_edge_bps >= 5:
+            return "small_probe"
+        return "paper"
 
     @staticmethod
     def _is_missing_liquidity_data(long_snapshot: MarketSnapshot, short_snapshot: MarketSnapshot) -> bool:

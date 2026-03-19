@@ -104,6 +104,9 @@ class Opportunity(BaseModel):
     is_tradable: bool
     reject_reasons: list[str] = Field(default_factory=list)
     position_size_multiplier: float
+    suggested_position_pct: float
+    max_position_pct: float
+    execution_mode: str
 
 
 class OpportunitiesResponse(BaseModel):

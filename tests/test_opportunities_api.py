@@ -71,6 +71,9 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert item["is_tradable"] is True
     assert item["reject_reasons"] == []
     assert item["position_size_multiplier"] == item["funding_confidence_score"]
+    assert abs(item["suggested_position_pct"] - 0.09) < 1e-9
+    assert item["max_position_pct"] == 0.10
+    assert item["execution_mode"] == "normal"
 
 
 def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
@@ -156,6 +159,9 @@ def test_get_opportunities_keeps_low_confidence_funding_when_edge_is_strong(monk
     assert item["is_tradable"] is True
     assert "low_confidence_funding" in item["risk_flags"]
     assert item["position_size_multiplier"] == item["funding_confidence_score"]
+    assert abs(item["suggested_position_pct"] - 0.01) < 1e-9
+    assert item["max_position_pct"] == 0.10
+    assert item["execution_mode"] == "normal"
 
 
 def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
@@ -204,5 +210,8 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
     assert item["opportunity_grade"] == "watchlist"
     assert item["is_tradable"] is False
     assert item["position_size_multiplier"] == item["funding_confidence_score"]
+    assert abs(item["suggested_position_pct"] - 0.09) < 1e-9
+    assert item["max_position_pct"] == 0.03
+    assert item["execution_mode"] == "small_probe"
     assert "mixed_funding_sources" in item["reject_reasons"]
     assert "insufficient_risk_adjusted_edge" in item["reject_reasons"]
