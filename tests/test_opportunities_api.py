@@ -210,8 +210,56 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
     assert item["opportunity_grade"] == "watchlist"
     assert item["is_tradable"] is False
     assert item["position_size_multiplier"] == item["funding_confidence_score"]
-    assert abs(item["suggested_position_pct"] - 0.09) < 1e-9
+    assert abs(item["suggested_position_pct"] - 0.027) < 1e-9
     assert item["max_position_pct"] == 0.03
     assert item["execution_mode"] == "small_probe"
     assert "mixed_funding_sources" in item["reject_reasons"]
     assert "insufficient_risk_adjusted_edge" in item["reject_reasons"]
+
+
+def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                MarketSnapshot(
+                    exchange="binance",
+                    venue_type="cex",
+                    base_symbol="BTC",
+                    normalized_symbol="BTC-USDT-PERP",
+                    instrument_id="BTCUSDT",
+                    mark_price=100.0,
+                    funding_rate=0.0,
+                    funding_rate_source="latest_reported",
+                    funding_period_hours=8,
+                    open_interest_usd=15_000_000.0,
+                    quote_volume_24h_usd=25_000_000.0,
+                    timestamp_ms=1710000100000,
+                ),
+                MarketSnapshot(
+                    exchange="okx",
+                    venue_type="cex",
+                    base_symbol="BTC",
+                    normalized_symbol="BTC-USDT-PERP",
+                    instrument_id="BTC-USDT-SWAP",
+                    mark_price=100.14,
+                    funding_rate=0.0,
+                    funding_rate_source="current",
+                    funding_period_hours=8,
+                    open_interest_usd=12_000_000.0,
+                    quote_volume_24h_usd=25_000_000.0,
+                    timestamp_ms=1710000100000,
+                ),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    assert item["opportunity_grade"] == "watchlist"
+    assert item["execution_mode"] == "paper"
+    assert item["suggested_position_pct"] == 0.0

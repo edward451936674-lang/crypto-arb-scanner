@@ -149,6 +149,10 @@ class ArbitrageScannerService:
         )
         max_position_pct = self._max_position_pct(opportunity_grade)
         execution_mode = self._execution_mode(opportunity_grade, risk_adjusted_edge_bps)
+        suggested_position_pct = self._adjust_position_pct_for_execution_mode(
+            suggested_position_pct,
+            execution_mode,
+        )
 
         if opportunity_grade == "discard":
             return None
@@ -307,6 +311,17 @@ class ArbitrageScannerService:
         if opportunity_grade == "watchlist" and risk_adjusted_edge_bps >= 5:
             return "small_probe"
         return "paper"
+
+    @staticmethod
+    def _adjust_position_pct_for_execution_mode(
+        suggested_position_pct: float,
+        execution_mode: str,
+    ) -> float:
+        if execution_mode == "paper":
+            return 0.0
+        if execution_mode == "small_probe":
+            return suggested_position_pct * 0.3
+        return suggested_position_pct
 
     @staticmethod
     def _is_missing_liquidity_data(long_snapshot: MarketSnapshot, short_snapshot: MarketSnapshot) -> bool:
