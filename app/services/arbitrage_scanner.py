@@ -135,15 +135,10 @@ class ArbitrageScannerService:
         funding_confidence_label = self._funding_confidence_label(funding_confidence_score)
         risk_flags = self._risk_flags(long_snapshot, short_snapshot, funding_confidence_score)
         risk_adjusted_edge_bps = net_edge_bps * funding_confidence_score
-        opportunity_grade = self._opportunity_grade(
-            net_edge_bps,
-            funding_confidence_score,
-            risk_flags,
-        )
-        is_tradable = opportunity_grade == "tradable"
+        opportunity_grade = self._opportunity_grade(risk_adjusted_edge_bps)
+        is_tradable = risk_adjusted_edge_bps >= 8
         reject_reasons = [] if is_tradable else self._reject_reasons(
-            net_edge_bps,
-            funding_confidence_score,
+            risk_adjusted_edge_bps,
             risk_flags,
         )
 
@@ -180,6 +175,7 @@ class ArbitrageScannerService:
             opportunity_grade=opportunity_grade,
             is_tradable=is_tradable,
             reject_reasons=reject_reasons,
+            position_size_multiplier=funding_confidence_score,
         )
 
     def _funding_confidence_score(
@@ -240,40 +236,23 @@ class ArbitrageScannerService:
         return flags
 
     @staticmethod
-    def _opportunity_grade(
-        net_edge_bps: float,
-        funding_confidence_score: float,
-        risk_flags: list[str],
-    ) -> str:
-        if (
-            net_edge_bps <= 0
-            or funding_confidence_score < 0.5
-            or "abnormal_hourly_funding" in risk_flags
-            or net_edge_bps < MIN_WATCHLIST_NET_EDGE_BPS
-        ):
-            return "discard"
-        if (
-            net_edge_bps >= MIN_TRADABLE_NET_EDGE_BPS
-            and funding_confidence_score >= 0.8
-            and "abnormal_hourly_funding" not in risk_flags
-            and "low_open_interest" not in risk_flags
-            and "low_quote_volume" not in risk_flags
-            and len(risk_flags) < 3
-        ):
-            return "tradable"
-        return "watchlist"
+    def _opportunity_grade(risk_adjusted_edge_bps: float) -> str:
+        if risk_adjusted_edge_bps >= 10:
+            return "A"
+        if risk_adjusted_edge_bps >= 7:
+            return "B"
+        if risk_adjusted_edge_bps >= 5:
+            return "watchlist"
+        return "discard"
 
     @staticmethod
     def _reject_reasons(
-        net_edge_bps: float,
-        funding_confidence_score: float,
+        risk_adjusted_edge_bps: float,
         risk_flags: list[str],
     ) -> list[str]:
         reject_reasons: list[str] = []
-        if net_edge_bps < MIN_TRADABLE_NET_EDGE_BPS:
+        if risk_adjusted_edge_bps < 8:
             reject_reasons.append("insufficient_net_edge")
-        if funding_confidence_score < 0.5 and "low_confidence_funding" not in reject_reasons:
-            reject_reasons.append("low_confidence_funding")
         for risk_flag in risk_flags:
             if risk_flag in {
                 "mixed_funding_sources",

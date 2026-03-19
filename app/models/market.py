@@ -103,6 +103,7 @@ class Opportunity(BaseModel):
     opportunity_grade: str
     is_tradable: bool
     reject_reasons: list[str] = Field(default_factory=list)
+    position_size_multiplier: float
 
 
 class OpportunitiesResponse(BaseModel):

@@ -67,9 +67,10 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert "risk_adjusted_edge_bps" in item
     assert "risk_flags" in item
     assert "mixed_funding_sources" in item["risk_flags"]
-    assert item["opportunity_grade"] == "tradable"
+    assert item["opportunity_grade"] == "A"
     assert item["is_tradable"] is True
     assert item["reject_reasons"] == []
+    assert item["position_size_multiplier"] == item["funding_confidence_score"]
 
 
 def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
@@ -112,7 +113,7 @@ def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
     assert response["opportunities"] == []
 
 
-def test_get_opportunities_filters_low_confidence_funding(monkeypatch) -> None:
+def test_get_opportunities_keeps_low_confidence_funding_when_edge_is_strong(monkeypatch) -> None:
     async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
         return MarketDataResponse(
             requested_symbols=symbols,
@@ -135,7 +136,7 @@ def test_get_opportunities_filters_low_confidence_funding(monkeypatch) -> None:
                     base_symbol="BTC",
                     normalized_symbol="BTC-USDT-PERP",
                     instrument_id="BTC-USDT-SWAP",
-                    mark_price=101.0,
+                    mark_price=100.32,
                     funding_rate=0.0004,
                     funding_rate_source="last_settled_fallback",
                     funding_period_hours=8,
@@ -149,7 +150,12 @@ def test_get_opportunities_filters_low_confidence_funding(monkeypatch) -> None:
 
     response = asyncio.run(get_opportunities(symbols="BTC"))
 
-    assert response["opportunities"] == []
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    assert item["opportunity_grade"] == "A"
+    assert item["is_tradable"] is True
+    assert "low_confidence_funding" in item["risk_flags"]
+    assert item["position_size_multiplier"] == item["funding_confidence_score"]
 
 
 def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
@@ -164,11 +170,11 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
                     normalized_symbol="BTC-USDT-PERP",
                     instrument_id="BTCUSDT",
                     mark_price=100.0,
-                    funding_rate=-0.0008,
-                    funding_rate_source="estimated_current",
+                    funding_rate=0.0,
+                    funding_rate_source="latest_reported",
                     funding_period_hours=8,
-                    open_interest_usd=5_000_000.0,
-                    quote_volume_24h_usd=15_000_000.0,
+                    open_interest_usd=15_000_000.0,
+                    quote_volume_24h_usd=25_000_000.0,
                     timestamp_ms=1710000100000,
                 ),
                 MarketSnapshot(
@@ -177,8 +183,8 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
                     base_symbol="BTC",
                     normalized_symbol="BTC-USDT-PERP",
                     instrument_id="BTC-USDT-SWAP",
-                    mark_price=100.2,
-                    funding_rate=0.0008,
+                    mark_price=100.17,
+                    funding_rate=0.0,
                     funding_rate_source="current",
                     funding_period_hours=8,
                     open_interest_usd=12_000_000.0,
@@ -197,8 +203,6 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
     item = response["opportunities"][0]
     assert item["opportunity_grade"] == "watchlist"
     assert item["is_tradable"] is False
-    assert "low_open_interest" in item["risk_flags"]
-    assert "low_quote_volume" in item["risk_flags"]
+    assert item["position_size_multiplier"] == item["funding_confidence_score"]
     assert "mixed_funding_sources" in item["reject_reasons"]
-    assert "low_open_interest" in item["reject_reasons"]
-    assert "low_quote_volume" in item["reject_reasons"]
+    assert "insufficient_net_edge" in item["reject_reasons"]
