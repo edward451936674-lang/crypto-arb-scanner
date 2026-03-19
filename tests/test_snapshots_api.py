@@ -22,6 +22,8 @@ def test_get_snapshots_includes_funding_fields(monkeypatch) -> None:
                     funding_time_ms=1710000000000,
                     next_funding_time_ms=1710028800000,
                     funding_period_hours=8,
+                    open_interest_usd=15000000.0,
+                    quote_volume_24h_usd=25000000.0,
                     timestamp_ms=1710000100000,
                 )
             ],
@@ -38,3 +40,5 @@ def test_get_snapshots_includes_funding_fields(monkeypatch) -> None:
     assert snapshot["funding_period_hours"] == 8
     assert snapshot["hourly_funding_rate"] == 0.0000125
     assert snapshot["hourly_funding_rate_bps"] == 0.125
+    assert snapshot["open_interest_usd"] == 15000000.0
+    assert snapshot["quote_volume_24h_usd"] == 25000000.0

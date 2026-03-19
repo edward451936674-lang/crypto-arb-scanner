@@ -31,6 +31,8 @@ class MarketSnapshot(BaseModel):
     funding_period_hours: int | None = None
     hourly_funding_rate: float | None = None
     hourly_funding_rate_bps: float | None = None
+    open_interest_usd: float | None = None
+    quote_volume_24h_usd: float | None = None
     timestamp_ms: int
     raw: dict[str, Any] = Field(default_factory=dict)
 

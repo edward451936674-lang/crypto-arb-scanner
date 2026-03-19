@@ -20,6 +20,8 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
                     funding_rate=-0.001,
                     funding_rate_source="latest_reported",
                     funding_period_hours=8,
+                    open_interest_usd=15000000.0,
+                    quote_volume_24h_usd=30000000.0,
                     timestamp_ms=1710000100000,
                 ),
                 MarketSnapshot(
@@ -32,6 +34,8 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
                     funding_rate=0.001,
                     funding_rate_source="current",
                     funding_period_hours=8,
+                    open_interest_usd=12000000.0,
+                    quote_volume_24h_usd=25000000.0,
                     timestamp_ms=1710000100000,
                 ),
             ],
@@ -163,6 +167,8 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
                     funding_rate=-0.0008,
                     funding_rate_source="estimated_current",
                     funding_period_hours=8,
+                    open_interest_usd=5_000_000.0,
+                    quote_volume_24h_usd=15_000_000.0,
                     timestamp_ms=1710000100000,
                 ),
                 MarketSnapshot(
@@ -175,6 +181,8 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
                     funding_rate=0.0008,
                     funding_rate_source="current",
                     funding_period_hours=8,
+                    open_interest_usd=12_000_000.0,
+                    quote_volume_24h_usd=25_000_000.0,
                     timestamp_ms=1710000100000,
                 ),
             ],
@@ -189,4 +197,8 @@ def test_get_opportunities_keeps_watchlist_items(monkeypatch) -> None:
     item = response["opportunities"][0]
     assert item["opportunity_grade"] == "watchlist"
     assert item["is_tradable"] is False
-    assert item["reject_reasons"] == ["mixed_funding_sources"]
+    assert "low_open_interest" in item["risk_flags"]
+    assert "low_quote_volume" in item["risk_flags"]
+    assert "mixed_funding_sources" in item["reject_reasons"]
+    assert "low_open_interest" in item["reject_reasons"]
+    assert "low_quote_volume" in item["reject_reasons"]

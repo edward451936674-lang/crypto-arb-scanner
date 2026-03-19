@@ -229,6 +229,12 @@ class ArbitrageScannerService:
             or abs(short_snapshot.hourly_funding_rate_bps or 0.0) > ABNORMAL_ABS_HOURLY_FUNDING_BPS
         ):
             flags.append("abnormal_hourly_funding")
+        if self._is_missing_liquidity_data(long_snapshot, short_snapshot):
+            flags.append("missing_liquidity_data")
+        if self._has_low_open_interest(long_snapshot, short_snapshot):
+            flags.append("low_open_interest")
+        if self._has_low_quote_volume(long_snapshot, short_snapshot):
+            flags.append("low_quote_volume")
         if funding_confidence_score < 0.55:
             flags.append("low_confidence_funding")
         return flags
@@ -250,6 +256,8 @@ class ArbitrageScannerService:
             net_edge_bps >= MIN_TRADABLE_NET_EDGE_BPS
             and funding_confidence_score >= 0.8
             and "abnormal_hourly_funding" not in risk_flags
+            and "low_open_interest" not in risk_flags
+            and "low_quote_volume" not in risk_flags
             and len(risk_flags) < 3
         ):
             return "tradable"
@@ -272,9 +280,45 @@ class ArbitrageScannerService:
                 "low_confidence_funding",
                 "different_funding_periods",
                 "abnormal_hourly_funding",
+                "low_open_interest",
+                "low_quote_volume",
+                "missing_liquidity_data",
             } and risk_flag not in reject_reasons:
                 reject_reasons.append(risk_flag)
         return reject_reasons
+
+    @staticmethod
+    def _is_missing_liquidity_data(long_snapshot: MarketSnapshot, short_snapshot: MarketSnapshot) -> bool:
+        return (
+            ArbitrageScannerService._snapshot_missing_liquidity_data(long_snapshot)
+            or ArbitrageScannerService._snapshot_missing_liquidity_data(short_snapshot)
+        )
+
+    @staticmethod
+    def _snapshot_missing_liquidity_data(snapshot: MarketSnapshot) -> bool:
+        return snapshot.open_interest_usd is None and snapshot.quote_volume_24h_usd is None
+
+    @staticmethod
+    def _has_low_open_interest(long_snapshot: MarketSnapshot, short_snapshot: MarketSnapshot) -> bool:
+        return (
+            ArbitrageScannerService._snapshot_low_open_interest(long_snapshot)
+            or ArbitrageScannerService._snapshot_low_open_interest(short_snapshot)
+        )
+
+    @staticmethod
+    def _snapshot_low_open_interest(snapshot: MarketSnapshot) -> bool:
+        return snapshot.open_interest_usd is not None and snapshot.open_interest_usd < 10_000_000
+
+    @staticmethod
+    def _has_low_quote_volume(long_snapshot: MarketSnapshot, short_snapshot: MarketSnapshot) -> bool:
+        return (
+            ArbitrageScannerService._snapshot_low_quote_volume(long_snapshot)
+            or ArbitrageScannerService._snapshot_low_quote_volume(short_snapshot)
+        )
+
+    @staticmethod
+    def _snapshot_low_quote_volume(snapshot: MarketSnapshot) -> bool:
+        return snapshot.quote_volume_24h_usd is not None and snapshot.quote_volume_24h_usd < 20_000_000
 
     @staticmethod
     def _limit_opportunities_per_symbol(opportunities: list[Opportunity]) -> list[Opportunity]:

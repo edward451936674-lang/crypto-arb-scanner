@@ -69,6 +69,8 @@ class LighterClient(ExchangeClient):
                     funding_time_ms=self._to_int(stats.get("funding_timestamp")),
                     next_funding_time_ms=None,
                     funding_period_hours=4,
+                    open_interest_usd=self._to_float(stats.get("open_interest")),
+                    quote_volume_24h_usd=self._to_float(stats.get("daily_quote_token_volume")),
                     timestamp_ms=timestamp_ms,
                     raw=stats,
                 )
