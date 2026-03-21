@@ -2,6 +2,7 @@ import asyncio
 
 from app.main import get_opportunities
 from app.models.market import MarketDataResponse, MarketSnapshot
+from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.market_data import MarketDataService
 
 
@@ -263,3 +264,52 @@ def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None
     assert item["opportunity_grade"] == "watchlist"
     assert item["execution_mode"] == "paper"
     assert item["suggested_position_pct"] == 0.0
+
+
+def test_get_opportunities_applies_portfolio_cap_after_execution_adjustment(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                MarketSnapshot(
+                    exchange="binance",
+                    venue_type="cex",
+                    base_symbol="BTC",
+                    normalized_symbol="BTC-USDT-PERP",
+                    instrument_id="BTCUSDT",
+                    mark_price=100.0,
+                    funding_rate=-0.001,
+                    funding_rate_source="latest_reported",
+                    funding_period_hours=8,
+                    open_interest_usd=15_000_000.0,
+                    quote_volume_24h_usd=30_000_000.0,
+                    timestamp_ms=1710000100000,
+                ),
+                MarketSnapshot(
+                    exchange="okx",
+                    venue_type="cex",
+                    base_symbol="BTC",
+                    normalized_symbol="BTC-USDT-PERP",
+                    instrument_id="BTC-USDT-SWAP",
+                    mark_price=101.0,
+                    funding_rate=0.001,
+                    funding_rate_source="current",
+                    funding_period_hours=8,
+                    open_interest_usd=12_000_000.0,
+                    quote_volume_24h_usd=25_000_000.0,
+                    timestamp_ms=1710000100000,
+                ),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(ArbitrageScannerService, "_max_position_pct", staticmethod(lambda grade: 0.04))
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    assert item["execution_mode"] == "normal"
+    assert item["suggested_position_pct"] == 0.04
+    assert item["max_position_pct"] == 0.04

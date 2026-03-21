@@ -153,6 +153,10 @@ class ArbitrageScannerService:
             suggested_position_pct,
             execution_mode,
         )
+        suggested_position_pct = self._apply_portfolio_cap(
+            suggested_position_pct,
+            max_position_pct,
+        )
 
         if opportunity_grade == "discard":
             return None
@@ -322,6 +326,13 @@ class ArbitrageScannerService:
         if execution_mode == "small_probe":
             return suggested_position_pct * 0.3
         return suggested_position_pct
+
+    @staticmethod
+    def _apply_portfolio_cap(
+        suggested_position_pct: float,
+        max_position_pct: float,
+    ) -> float:
+        return max(0.0, min(suggested_position_pct, max_position_pct))
 
     @staticmethod
     def _is_missing_liquidity_data(long_snapshot: MarketSnapshot, short_snapshot: MarketSnapshot) -> bool:
