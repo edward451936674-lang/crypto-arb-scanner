@@ -46,6 +46,7 @@ class HyperliquidClient(ExchangeClient):
 
             context = record["context"]
             asset = record["asset"]
+            mark_price = float(context["markPx"])
             snapshots.append(
                 MarketSnapshot(
                     exchange=self.name,
@@ -53,15 +54,27 @@ class HyperliquidClient(ExchangeClient):
                     base_symbol=spec.base_symbol,
                     normalized_symbol=spec.normalized_symbol,
                     instrument_id=str(asset.get("name", spec.hyperliquid_coin)),
-                    mark_price=float(context["markPx"]),
+                    mark_price=mark_price,
                     index_price=self._to_float(context.get("oraclePx")),
                     funding_rate=self._to_float(context.get("funding")),
                     funding_rate_source="current_8h",
                     funding_time_ms=None,
                     next_funding_time_ms=None,
+                    funding_period_hours=8,
+                    open_interest_usd=self._open_interest_usd(context, mark_price),
+                    quote_volume_24h_usd=self._to_float(context.get("dayNtlVlm")),
                     timestamp_ms=now_ms,
                     raw={"asset": asset, "context": context},
                 )
             )
 
         return snapshots
+
+    def _open_interest_usd(self, context: dict[str, Any], mark_price: float) -> float | None:
+        try:
+            open_interest = self._to_float(context.get("openInterest"))
+        except (TypeError, ValueError):
+            return None
+        if open_interest is None:
+            return None
+        return open_interest * mark_price
