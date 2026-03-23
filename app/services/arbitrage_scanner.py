@@ -264,7 +264,7 @@ class ArbitrageScannerService:
 
     @staticmethod
     def _cluster_id(opportunity: Opportunity) -> str:
-        return f"{opportunity.symbol}|{opportunity.short_exchange}|funding_capture"
+        return f"{opportunity.symbol}|{opportunity.long_exchange}|funding_capture"
 
     @staticmethod
     def _cluster_rank_key(candidate: OpportunityCandidate) -> tuple[float, float, int, int, float]:
@@ -272,9 +272,10 @@ class ArbitrageScannerService:
         return (
             -opportunity.risk_adjusted_edge_bps,
             -opportunity.net_edge_bps,
-            ArbitrageScannerService._blocking_risk_count(opportunity.risk_flags),
+            -opportunity.funding_confidence_score,
             ArbitrageScannerService._missing_liquidity_count(opportunity.risk_flags),
             opportunity.estimated_fee_bps,
+            ArbitrageScannerService._blocking_risk_count(opportunity.risk_flags),
         )
 
     @staticmethod
@@ -303,50 +304,56 @@ class ArbitrageScannerService:
         short_snapshot: MarketSnapshot,
         is_primary_route: bool,
     ) -> tuple[float, list[str]]:
-        score = 0.15
+        score = 0.10
         drivers: list[str] = []
 
-        if opportunity.risk_adjusted_edge_bps >= 15:
-            score += 0.25
+        if opportunity.risk_adjusted_edge_bps >= 18:
+            score += 0.22
             drivers.append("strong_risk_adjusted_edge")
+        elif opportunity.risk_adjusted_edge_bps >= 12:
+            score += 0.16
         elif opportunity.risk_adjusted_edge_bps >= 8:
-            score += 0.15
+            score += 0.10
 
         if opportunity.net_edge_bps >= 20:
-            score += 0.20
+            score += 0.18
             drivers.append("strong_net_edge")
-        elif opportunity.net_edge_bps >= 10:
-            score += 0.10
+        elif opportunity.net_edge_bps >= 12:
+            score += 0.12
 
-        if opportunity.funding_confidence_score >= 0.8:
-            score += 0.15
+        if opportunity.funding_confidence_score >= 0.85:
+            score += 0.12
             drivers.append("high_funding_confidence")
-        elif opportunity.funding_confidence_score >= 0.55:
+        elif opportunity.funding_confidence_score >= 0.65:
             score += 0.08
+            drivers.append("reliable_funding_confidence")
 
         if long_snapshot.funding_period_hours == short_snapshot.funding_period_hours:
-            score += 0.10
+            score += 0.06
             drivers.append("matched_funding_periods")
-        else:
-            score -= 0.10
 
+        if "missing_liquidity_data" not in opportunity.risk_flags:
+            score += 0.08
+            drivers.append("complete_liquidity_data")
         if not any(flag in LIQUIDITY_RISK_FLAGS for flag in opportunity.risk_flags):
-            score += 0.15
+            score += 0.16
             drivers.append("adequate_liquidity")
         if is_primary_route:
             score += 0.10
             drivers.append("primary_route")
 
         if "different_funding_periods" in opportunity.risk_flags:
-            score -= 0.12
+            score -= 0.06
         if "low_confidence_funding" in opportunity.risk_flags:
-            score -= 0.12
+            score -= 0.08
         if "missing_liquidity_data" in opportunity.risk_flags:
-            score -= 0.15
+            score -= 0.12
         if "low_open_interest" in opportunity.risk_flags:
-            score -= 0.08
+            score -= 0.06
         if "low_quote_volume" in opportunity.risk_flags:
-            score -= 0.08
+            score -= 0.06
+        if "abnormal_hourly_funding" in opportunity.risk_flags:
+            score -= 0.10
 
         return max(0.0, min(1.0, score)), drivers
 
@@ -370,6 +377,7 @@ class ArbitrageScannerService:
             and opportunity.funding_confidence_score >= 0.8
             and "missing_liquidity_data" not in opportunity.risk_flags
             and "different_funding_periods" not in opportunity.risk_flags
+            and "abnormal_hourly_funding" not in opportunity.risk_flags
             and is_primary_route
         )
 
@@ -494,9 +502,13 @@ class ArbitrageScannerService:
     ) -> str:
         if size_up_eligible:
             return "size_up"
-        if opportunity.opportunity_grade == "tradable":
+        if (
+            opportunity.opportunity_grade == "tradable"
+            and opportunity.is_primary_route
+            and conviction_score >= 0.5
+        ):
             return "normal"
-        if opportunity.opportunity_grade == "watchlist" and conviction_score >= 0.5:
+        if opportunity.opportunity_grade in {"tradable", "watchlist"} and conviction_score >= 0.2:
             return "small_probe"
         return "paper"
 

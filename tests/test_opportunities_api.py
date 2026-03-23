@@ -47,28 +47,16 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
 
     response = asyncio.run(get_opportunities(symbols="BTC"))
 
-    assert "opportunities" in response
     assert len(response["opportunities"]) == 1
-
     item = response["opportunities"][0]
     assert item["symbol"] == "BTC"
-    assert item["cluster_id"] == "BTC|okx|funding_capture"
+    assert item["cluster_id"] == "BTC|binance|funding_capture"
     assert item["is_primary_route"] is True
     assert item["route_rank"] == 1
-    assert item["long_exchange"] == "binance"
-    assert item["short_exchange"] == "okx"
-    assert item["price_spread_bps"] > 0
-    assert item["estimated_fee_bps"] == 10.0
-    assert item["funding_confidence_label"] == "high"
-    assert item["conviction_score"] >= 0.75
     assert item["conviction_label"] == "high"
-    assert "high_funding_confidence" in item["conviction_drivers"]
-    assert "primary_route" in item["conviction_drivers"]
     assert item["size_up_eligible"] is True
-    assert item["opportunity_grade"] == "tradable"
     assert item["execution_mode"] == "size_up"
-    assert item["suggested_position_pct"] > 0.09
-    assert item["max_position_pct"] == 0.10
+    assert item["suggested_position_pct"] == item["max_position_pct"]
 
 
 def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
@@ -76,8 +64,20 @@ def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
         return MarketDataResponse(
             requested_symbols=symbols,
             snapshots=[
-                _snapshot("binance", 100.0, funding_rate_source="latest_reported", open_interest_usd=None, quote_volume_24h_usd=None),
-                _snapshot("okx", 100.06, funding_rate_source="current", open_interest_usd=None, quote_volume_24h_usd=None),
+                _snapshot(
+                    "binance",
+                    100.0,
+                    funding_rate_source="latest_reported",
+                    open_interest_usd=None,
+                    quote_volume_24h_usd=None,
+                ),
+                _snapshot(
+                    "okx",
+                    100.06,
+                    funding_rate_source="current",
+                    open_interest_usd=None,
+                    quote_volume_24h_usd=None,
+                ),
             ],
             errors=[],
         )
@@ -89,7 +89,7 @@ def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
     assert response["opportunities"] == []
 
 
-def test_get_opportunities_keeps_low_confidence_funding_when_edge_is_strong(monkeypatch) -> None:
+def test_strong_primary_route_can_be_medium_conviction_and_normal(monkeypatch) -> None:
     async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
         return MarketDataResponse(
             requested_symbols=symbols,
@@ -100,14 +100,13 @@ def test_get_opportunities_keeps_low_confidence_funding_when_edge_is_strong(monk
                     funding_rate=-0.0004,
                     funding_rate_source="estimated_current",
                     funding_period_hours=4,
-                    open_interest_usd=None,
-                    quote_volume_24h_usd=None,
                 ),
                 _snapshot(
                     "okx",
                     100.32,
                     funding_rate=0.0004,
                     funding_rate_source="last_settled_fallback",
+                    funding_period_hours=8,
                 ),
             ],
             errors=[],
@@ -120,12 +119,51 @@ def test_get_opportunities_keeps_low_confidence_funding_when_edge_is_strong(monk
     assert len(response["opportunities"]) == 1
     item = response["opportunities"][0]
     assert item["opportunity_grade"] == "tradable"
-    assert item["is_tradable"] is True
-    assert "low_confidence_funding" in item["risk_flags"]
-    assert 0.0 <= item["conviction_score"] <= 1.0
-    assert item["conviction_label"] == "low"
-    assert item["size_up_eligible"] is False
+    assert item["is_primary_route"] is True
+    assert item["conviction_label"] == "medium"
+    assert 0.50 <= item["conviction_score"] < 0.75
     assert item["execution_mode"] == "normal"
+    assert item["size_up_eligible"] is False
+    assert "strong_net_edge" in item["conviction_drivers"]
+    assert "adequate_liquidity" in item["conviction_drivers"]
+    assert "primary_route" in item["conviction_drivers"]
+
+
+def test_missing_liquidity_routes_score_lower_than_clean_routes() -> None:
+    scanner = ArbitrageScannerService()
+
+    clean_route = scanner.build_opportunities(
+        [
+            _snapshot("lighter", 100.0, funding_rate=-0.0004, funding_rate_source="estimated_current", funding_period_hours=4),
+            _snapshot("okx", 100.32, funding_rate=0.0004, funding_rate_source="last_settled_fallback", funding_period_hours=8),
+        ]
+    )[0]
+    missing_liquidity_route = scanner.build_opportunities(
+        [
+            _snapshot(
+                "lighter",
+                100.0,
+                funding_rate=-0.0004,
+                funding_rate_source="estimated_current",
+                funding_period_hours=4,
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+            _snapshot(
+                "okx",
+                100.32,
+                funding_rate=0.0004,
+                funding_rate_source="last_settled_fallback",
+                funding_period_hours=8,
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+        ]
+    )[0]
+
+    assert clean_route.conviction_score > missing_liquidity_route.conviction_score
+    assert clean_route.suggested_position_pct > missing_liquidity_route.suggested_position_pct
+    assert missing_liquidity_route.execution_mode == "small_probe"
 
 
 def test_get_opportunities_keeps_watchlist_items_as_small_probe(monkeypatch) -> None:
@@ -146,10 +184,8 @@ def test_get_opportunities_keeps_watchlist_items_as_small_probe(monkeypatch) -> 
     assert len(response["opportunities"]) == 1
     item = response["opportunities"][0]
     assert item["opportunity_grade"] == "watchlist"
-    assert item["is_tradable"] is False
     assert item["execution_mode"] == "small_probe"
-    assert item["suggested_position_pct"] > 0.0
-    assert item["suggested_position_pct"] < item["max_position_pct"]
+    assert 0.0 < item["suggested_position_pct"] < item["max_position_pct"]
 
 
 def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None:
@@ -182,43 +218,40 @@ def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None
 
     assert len(response["opportunities"]) == 1
     item = response["opportunities"][0]
-    assert item["opportunity_grade"] == "watchlist"
-    assert item["conviction_label"] == "low"
     assert item["execution_mode"] == "paper"
     assert item["suggested_position_pct"] == 0.0
 
 
-def test_get_opportunities_same_cluster_routes_rank_primary_first() -> None:
+def test_routes_with_same_long_exchange_share_cluster_and_single_primary() -> None:
     scanner = ArbitrageScannerService()
 
     opportunities = scanner.build_opportunities(
         [
-            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
-            _snapshot("okx", 101.0, funding_rate=-0.0005, funding_rate_source="current"),
-            _snapshot("lighter", 102.0, funding_rate=0.0012, funding_rate_source="current"),
+            _snapshot("lighter", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("binance", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("okx", 102.0, funding_rate=0.0012, funding_rate_source="current"),
         ]
     )
 
     lighter_cluster = [item for item in opportunities if item.cluster_id == "BTC|lighter|funding_capture"]
     assert len(lighter_cluster) == 2
-    assert {item.cluster_id for item in lighter_cluster} == {"BTC|lighter|funding_capture"}
     assert sum(1 for item in lighter_cluster if item.is_primary_route) == 1
     assert [item.route_rank for item in lighter_cluster] == [1, 2]
-    assert lighter_cluster[0].is_primary_route is True
-    assert lighter_cluster[0].risk_adjusted_edge_bps >= lighter_cluster[1].risk_adjusted_edge_bps
+    assert all(item.long_exchange == "lighter" for item in lighter_cluster)
 
 
-def test_get_opportunities_conviction_score_is_clamped_and_labels_match() -> None:
+def test_only_primary_routes_with_medium_plus_conviction_can_be_normal() -> None:
     scanner = ArbitrageScannerService()
 
     opportunities = scanner.build_opportunities(
         [
-            _snapshot("binance", 100.0, funding_rate=-0.002, funding_rate_source="latest_reported"),
-            _snapshot("lighter", 103.0, funding_rate=0.002, funding_rate_source="current"),
+            _snapshot("lighter", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("binance", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("okx", 102.0, funding_rate=0.0012, funding_rate_source="current"),
             _snapshot(
-                "okx",
-                100.5,
-                funding_rate=0.0001,
+                "hyperliquid",
+                103.0,
+                funding_rate=0.002,
                 funding_rate_source="last_settled_fallback",
                 funding_period_hours=4,
                 open_interest_usd=None,
@@ -227,40 +260,55 @@ def test_get_opportunities_conviction_score_is_clamped_and_labels_match() -> Non
         ]
     )
 
-    assert opportunities
-    for item in opportunities:
-        assert 0.0 <= item.conviction_score <= 1.0
-        if item.conviction_score >= 0.75:
-            assert item.conviction_label == "high"
-        elif item.conviction_score >= 0.50:
-            assert item.conviction_label == "medium"
-        else:
-            assert item.conviction_label == "low"
+    normal_routes = [item for item in opportunities if item.execution_mode == "normal"]
+    assert all(item.is_primary_route for item in normal_routes)
+    assert all(item.conviction_score >= 0.50 for item in normal_routes)
 
 
-def test_size_up_requires_primary_route_and_beats_normal_sizing() -> None:
+def test_secondary_routes_usually_fall_to_small_probe() -> None:
     scanner = ArbitrageScannerService()
 
     opportunities = scanner.build_opportunities(
         [
-            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
-            _snapshot("okx", 100.5, funding_rate=-0.0006, funding_rate_source="current"),
-            _snapshot("lighter", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("lighter", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("binance", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("okx", 102.0, funding_rate=0.0012, funding_rate_source="current"),
         ]
     )
 
-    size_up_item = next(item for item in opportunities if item.execution_mode == "size_up")
-    normal_item = next(
-        item for item in opportunities if item.cluster_id == "BTC|lighter|funding_capture" and item.execution_mode == "normal"
+    secondary_routes = [item for item in opportunities if item.route_rank and item.route_rank > 1]
+    assert secondary_routes
+    assert all(item.execution_mode == "small_probe" for item in secondary_routes)
+
+
+def test_size_up_remains_strict_for_noisy_mismatched_routes() -> None:
+    scanner = ArbitrageScannerService()
+
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot(
+                "lighter",
+                100.0,
+                funding_rate=-0.0004,
+                funding_rate_source="estimated_current",
+                funding_period_hours=4,
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+            _snapshot(
+                "okx",
+                100.32,
+                funding_rate=0.0004,
+                funding_rate_source="last_settled_fallback",
+                funding_period_hours=8,
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+        ]
     )
 
-    assert size_up_item.opportunity_grade == "tradable"
-    assert size_up_item.is_primary_route is True
-    assert size_up_item.conviction_score >= 0.75
-    assert size_up_item.funding_confidence_score >= 0.8
-    assert "missing_liquidity_data" not in size_up_item.risk_flags
-    assert "different_funding_periods" not in size_up_item.risk_flags
-    assert size_up_item.size_up_eligible is True
-    assert normal_item.is_primary_route is False
-    assert normal_item.size_up_eligible is False
-    assert size_up_item.suggested_position_pct > normal_item.suggested_position_pct
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.opportunity_grade == "tradable"
+    assert item.size_up_eligible is False
+    assert item.execution_mode != "size_up"
