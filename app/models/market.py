@@ -75,6 +75,9 @@ class MarketDataResponse(BaseModel):
 
 class Opportunity(BaseModel):
     symbol: str
+    cluster_id: str | None = None
+    is_primary_route: bool = False
+    route_rank: int | None = None
     long_exchange: str
     short_exchange: str
     long_price: float
@@ -98,6 +101,10 @@ class Opportunity(BaseModel):
     net_edge_bps: float
     funding_confidence_score: float
     funding_confidence_label: str
+    conviction_score: float = 0.0
+    conviction_label: str = "low"
+    conviction_drivers: list[str] = Field(default_factory=list)
+    size_up_eligible: bool = False
     risk_adjusted_edge_bps: float
     risk_flags: list[str] = Field(default_factory=list)
     opportunity_grade: str
