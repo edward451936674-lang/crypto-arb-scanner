@@ -113,14 +113,15 @@ class Opportunity(BaseModel):
     position_size_multiplier: float
     suggested_position_pct: float
     final_position_pct: float = 0.0
+    is_executable_now: bool = False
     max_position_pct: float
     execution_mode: str
     portfolio_clamp_reasons: list[str] = Field(default_factory=list)
     portfolio_reject_reasons: list[str] = Field(default_factory=list)
-    portfolio_total_position_after: float = 0.0
-    portfolio_symbol_position_after: float = 0.0
-    portfolio_long_exchange_position_after: float = 0.0
-    portfolio_short_exchange_position_after: float = 0.0
+    portfolio_total_used_after: float = 0.0
+    portfolio_symbol_used_after: float = 0.0
+    portfolio_long_exchange_used_after: float = 0.0
+    portfolio_short_exchange_used_after: float = 0.0
     portfolio_rank: int | None = None
     allocation_priority_label: str | None = None
 

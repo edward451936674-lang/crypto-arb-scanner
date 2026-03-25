@@ -344,6 +344,7 @@ class ArbitrageScannerService:
                     clamp_reasons.append("capped_by_short_exchange_limit")
 
             final_position_pct = max(0.0, min(size, suggested_size))
+            is_executable_now = opportunity.execution_mode in {"small_probe", "normal", "size_up"}
             if final_position_pct <= 0.0 and not reject_reasons:
                 if max(0.0, MAX_TOTAL_POSITION_PCT - total_used) <= 0:
                     reject_reasons.append("no_total_capacity_remaining")
@@ -369,15 +370,16 @@ class ArbitrageScannerService:
                 opportunity.model_copy(
                     update={
                         "final_position_pct": final_position_pct,
+                        "is_executable_now": is_executable_now,
                         "portfolio_clamp_reasons": list(dict.fromkeys(clamp_reasons)),
                         "portfolio_reject_reasons": list(dict.fromkeys(reject_reasons)),
-                        "portfolio_total_position_after": total_used,
-                        "portfolio_symbol_position_after": symbol_used.get(opportunity.symbol, 0.0),
-                        "portfolio_long_exchange_position_after": exchange_used.get(
+                        "portfolio_total_used_after": total_used,
+                        "portfolio_symbol_used_after": symbol_used.get(opportunity.symbol, 0.0),
+                        "portfolio_long_exchange_used_after": exchange_used.get(
                             opportunity.long_exchange.lower(),
                             0.0,
                         ),
-                        "portfolio_short_exchange_position_after": exchange_used.get(
+                        "portfolio_short_exchange_used_after": exchange_used.get(
                             opportunity.short_exchange.lower(),
                             0.0,
                         ),

@@ -57,6 +57,7 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert item["conviction_label"] == "high"
     assert item["size_up_eligible"] is True
     assert item["execution_mode"] == "size_up"
+    assert item["is_executable_now"] is True
     assert item["suggested_position_pct"] == item["max_position_pct"]
     assert item["final_position_pct"] <= item["suggested_position_pct"]
     assert item["portfolio_rank"] == 1
@@ -126,6 +127,7 @@ def test_strong_primary_route_can_be_medium_conviction_and_normal(monkeypatch) -
     assert item["conviction_label"] == "medium"
     assert 0.50 <= item["conviction_score"] < 0.75
     assert item["execution_mode"] == "normal"
+    assert item["is_executable_now"] is True
     assert item["size_up_eligible"] is False
     assert "strong_net_edge" in item["conviction_drivers"]
     assert "adequate_liquidity" in item["conviction_drivers"]
@@ -188,6 +190,7 @@ def test_get_opportunities_keeps_watchlist_items_as_small_probe(monkeypatch) -> 
     item = response["opportunities"][0]
     assert item["opportunity_grade"] == "watchlist"
     assert item["execution_mode"] == "small_probe"
+    assert item["is_executable_now"] is True
     assert 0.0 < item["suggested_position_pct"] < item["max_position_pct"]
 
 
@@ -222,6 +225,7 @@ def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None
     assert len(response["opportunities"]) == 1
     item = response["opportunities"][0]
     assert item["execution_mode"] == "paper"
+    assert item["is_executable_now"] is False
     assert item["suggested_position_pct"] == 0.0
     assert item["final_position_pct"] == 0.0
     assert "paper_mode" in item["portfolio_reject_reasons"]
@@ -362,8 +366,8 @@ def test_portfolio_exchange_cap_is_enforced() -> None:
             _snapshot("hyperliquid", 204.0, base_symbol="ETH", funding_rate=0.001, funding_rate_source="current"),
         ]
     )
-    assert all(item.portfolio_long_exchange_position_after <= 0.10 + 1e-12 for item in opportunities)
-    assert all(item.portfolio_short_exchange_position_after <= 0.10 + 1e-12 for item in opportunities)
+    assert all(item.portfolio_long_exchange_used_after <= 0.10 + 1e-12 for item in opportunities)
+    assert all(item.portfolio_short_exchange_used_after <= 0.10 + 1e-12 for item in opportunities)
     has_exchange_clamp = any(
         "capped_by_long_exchange_limit" in item.portfolio_clamp_reasons
         or "capped_by_short_exchange_limit" in item.portfolio_clamp_reasons
