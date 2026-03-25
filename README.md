@@ -60,6 +60,61 @@ crypto-arb-scanner/
   README.md
 ```
 
+## Local Development Environment
+
+Recommended local setup on macOS:
+
+- Python 3.11
+- virtualenv under `.venv`
+- start Uvicorn with the asyncio loop
+
+Why:
+
+- local development has been more stable with Python 3.11 than Python 3.13
+- using the asyncio loop avoids local websocket/runtime compatibility issues seen with newer runtime combinations
+
+### Install Python 3.11 on macOS
+
+```bash
+brew install python@3.11
+python3.11 --version
+```
+
+### Local setup and startup (macOS recommended)
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+python -m uvicorn app.main:app --reload --loop asyncio
+```
+
+## Proxy / SOCKS Support
+
+If your environment sets `ALL_PROXY` to a `socks5://` or `socks5h://` proxy, HTTPX requires SOCKS support.
+
+This project now includes SOCKS support via dependencies (`httpx[socks]`).
+
+If you still see:
+
+`Using SOCKS proxy, but the 'socksio' package is not installed`
+
+install explicitly with:
+
+```bash
+pip install "httpx[socks]"
+```
+
+Example proxy environment variables:
+
+```bash
+export HTTP_PROXY=http://127.0.0.1:9098
+export HTTPS_PROXY=http://127.0.0.1:9098
+export ALL_PROXY=socks5h://127.0.0.1:9099
+export NO_PROXY=127.0.0.1,localhost
+export no_proxy=127.0.0.1,localhost
+```
+
 ## 本地运行
 
 ### 1) 创建虚拟环境
