@@ -10,6 +10,7 @@ def _snapshot(
     exchange: str,
     mark_price: float,
     *,
+    base_symbol: str = "BTC",
     funding_rate: float = 0.0,
     funding_rate_source: str = "current",
     funding_period_hours: int = 8,
@@ -19,9 +20,9 @@ def _snapshot(
     return MarketSnapshot(
         exchange=exchange,
         venue_type="dex" if exchange in {"hyperliquid", "lighter"} else "cex",
-        base_symbol="BTC",
-        normalized_symbol="BTC-USDT-PERP",
-        instrument_id=f"{exchange}-BTC",
+        base_symbol=base_symbol,
+        normalized_symbol=f"{base_symbol}-USDT-PERP",
+        instrument_id=f"{exchange}-{base_symbol}",
         mark_price=mark_price,
         funding_rate=funding_rate,
         funding_rate_source=funding_rate_source,
@@ -57,6 +58,8 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert item["size_up_eligible"] is True
     assert item["execution_mode"] == "size_up"
     assert item["suggested_position_pct"] == item["max_position_pct"]
+    assert item["final_position_pct"] <= item["suggested_position_pct"]
+    assert item["portfolio_rank"] == 1
 
 
 def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
@@ -220,6 +223,8 @@ def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None
     item = response["opportunities"][0]
     assert item["execution_mode"] == "paper"
     assert item["suggested_position_pct"] == 0.0
+    assert item["final_position_pct"] == 0.0
+    assert "paper_mode" in item["portfolio_reject_reasons"]
 
 
 def test_routes_with_same_long_exchange_share_cluster_and_single_primary() -> None:
@@ -312,3 +317,71 @@ def test_size_up_remains_strict_for_noisy_mismatched_routes() -> None:
     assert item.opportunity_grade == "tradable"
     assert item.size_up_eligible is False
     assert item.execution_mode != "size_up"
+
+
+def test_portfolio_total_allocated_never_exceeds_cap() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("hyperliquid", 102.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("lighter", 103.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+    total_final = sum(item.final_position_pct for item in opportunities)
+    assert total_final <= 0.20 + 1e-12
+    assert all(item.final_position_pct <= item.suggested_position_pct + 1e-12 for item in opportunities)
+
+
+def test_portfolio_symbol_cap_is_enforced() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("hyperliquid", 102.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("lighter", 103.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+    symbol_total = sum(item.final_position_pct for item in opportunities if item.symbol == "BTC")
+    assert symbol_total <= 0.08 + 1e-12
+    capped = [item for item in opportunities if "capped_by_symbol_limit" in item.portfolio_clamp_reasons]
+    assert capped
+
+
+def test_portfolio_exchange_cap_is_enforced() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("hyperliquid", 102.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("binance", 200.0, base_symbol="ETH", funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("okx", 202.0, base_symbol="ETH", funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("hyperliquid", 204.0, base_symbol="ETH", funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+    assert all(item.portfolio_long_exchange_position_after <= 0.10 + 1e-12 for item in opportunities)
+    assert all(item.portfolio_short_exchange_position_after <= 0.10 + 1e-12 for item in opportunities)
+    has_exchange_clamp = any(
+        "capped_by_long_exchange_limit" in item.portfolio_clamp_reasons
+        or "capped_by_short_exchange_limit" in item.portfolio_clamp_reasons
+        for item in opportunities
+    )
+    assert has_exchange_clamp
+
+
+def test_opportunities_still_visible_when_final_allocation_zero() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("hyperliquid", 102.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("lighter", 103.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+    zero_alloc = [item for item in opportunities if item.final_position_pct == 0.0]
+    assert zero_alloc
+    assert all(item.portfolio_rank is not None for item in zero_alloc)

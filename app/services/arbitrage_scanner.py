@@ -37,6 +37,10 @@ BASE_POSITION_PCT = 0.10
 DEFAULT_HOLDING_HOURS = 8
 MAX_OPPORTUNITIES_PER_SYMBOL = 3
 BPS_MULTIPLIER = 10_000
+MAX_TOTAL_POSITION_PCT = 0.20
+MAX_SYMBOL_POSITION_PCT = 0.08
+MAX_EXCHANGE_POSITION_PCT = 0.10
+MAX_SINGLE_OPPORTUNITY_PCT = 0.05
 EXECUTION_MODE_PRIORITY = {
     "paper": 0,
     "small_probe": 1,
@@ -99,7 +103,8 @@ class ArbitrageScannerService:
 
         annotated_candidates = self._annotate_clusters(candidates)
         opportunities = [candidate.opportunity for candidate in annotated_candidates]
-        opportunities.sort(key=self._sort_key, reverse=True)
+        opportunities.sort(key=self._allocation_sort_key, reverse=True)
+        opportunities = self._allocate_portfolio(opportunities)
         return self._limit_opportunities_per_symbol(opportunities)
 
     def _build_symbol_opportunities(self, snapshots: list[MarketSnapshot]) -> list[OpportunityCandidate]:
@@ -279,15 +284,114 @@ class ArbitrageScannerService:
         )
 
     @staticmethod
-    def _sort_key(opportunity: Opportunity) -> tuple[bool, bool, int, float, float, float]:
+    def _allocation_sort_key(opportunity: Opportunity) -> tuple[int, bool, float, float, float]:
         return (
-            opportunity.is_primary_route,
-            opportunity.size_up_eligible,
             EXECUTION_MODE_PRIORITY.get(opportunity.execution_mode, -1),
+            opportunity.is_primary_route,
             opportunity.conviction_score,
             opportunity.risk_adjusted_edge_bps,
-            opportunity.net_edge_bps,
+            opportunity.funding_confidence_score,
         )
+
+    def _allocate_portfolio(self, opportunities: list[Opportunity]) -> list[Opportunity]:
+        total_used = 0.0
+        symbol_used: dict[str, float] = {}
+        exchange_used: dict[str, float] = {}
+        allocated: list[Opportunity] = []
+
+        for rank, opportunity in enumerate(opportunities, start=1):
+            suggested_size = max(0.0, opportunity.suggested_position_pct)
+            size = suggested_size
+            clamp_reasons: list[str] = []
+            reject_reasons: list[str] = []
+
+            if opportunity.execution_mode == "paper":
+                size = 0.0
+                reject_reasons.append("paper_mode")
+            else:
+                size, was_clamped = self._clamp_size(size, MAX_SINGLE_OPPORTUNITY_PCT)
+                if was_clamped:
+                    clamp_reasons.append("capped_by_single_opportunity_limit")
+
+                remaining_total = max(0.0, MAX_TOTAL_POSITION_PCT - total_used)
+                if remaining_total <= 0:
+                    reject_reasons.append("no_total_capacity_remaining")
+                size, was_clamped = self._clamp_size(size, remaining_total)
+                if was_clamped:
+                    clamp_reasons.append("capped_by_total_portfolio_limit")
+
+                current_symbol_used = symbol_used.get(opportunity.symbol, 0.0)
+                remaining_symbol = max(0.0, MAX_SYMBOL_POSITION_PCT - current_symbol_used)
+                if remaining_symbol <= 0:
+                    reject_reasons.append("no_symbol_capacity_remaining")
+                size, was_clamped = self._clamp_size(size, remaining_symbol)
+                if was_clamped:
+                    clamp_reasons.append("capped_by_symbol_limit")
+
+                long_exchange_key = opportunity.long_exchange.lower()
+                short_exchange_key = opportunity.short_exchange.lower()
+                remaining_long = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(long_exchange_key, 0.0))
+                remaining_short = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(short_exchange_key, 0.0))
+                if remaining_long <= 0:
+                    reject_reasons.append("no_long_exchange_capacity_remaining")
+                if remaining_short <= 0:
+                    reject_reasons.append("no_short_exchange_capacity_remaining")
+                size, was_clamped = self._clamp_size(size, remaining_long)
+                if was_clamped:
+                    clamp_reasons.append("capped_by_long_exchange_limit")
+                size, was_clamped = self._clamp_size(size, remaining_short)
+                if was_clamped:
+                    clamp_reasons.append("capped_by_short_exchange_limit")
+
+            final_position_pct = max(0.0, min(size, suggested_size))
+            if final_position_pct <= 0.0 and not reject_reasons:
+                if max(0.0, MAX_TOTAL_POSITION_PCT - total_used) <= 0:
+                    reject_reasons.append("no_total_capacity_remaining")
+                if max(0.0, MAX_SYMBOL_POSITION_PCT - symbol_used.get(opportunity.symbol, 0.0)) <= 0:
+                    reject_reasons.append("no_symbol_capacity_remaining")
+                if max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(opportunity.long_exchange.lower(), 0.0)) <= 0:
+                    reject_reasons.append("no_long_exchange_capacity_remaining")
+                if max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(opportunity.short_exchange.lower(), 0.0)) <= 0:
+                    reject_reasons.append("no_short_exchange_capacity_remaining")
+
+            if final_position_pct > 0.0:
+                total_used += final_position_pct
+                symbol_used[opportunity.symbol] = symbol_used.get(opportunity.symbol, 0.0) + final_position_pct
+                long_exchange_key = opportunity.long_exchange.lower()
+                short_exchange_key = opportunity.short_exchange.lower()
+                exchange_used[long_exchange_key] = exchange_used.get(long_exchange_key, 0.0) + final_position_pct
+                exchange_used[short_exchange_key] = exchange_used.get(short_exchange_key, 0.0) + final_position_pct
+
+            allocation_priority_label = (
+                f"{opportunity.execution_mode}_{'primary' if opportunity.is_primary_route else 'secondary'}"
+            )
+            allocated.append(
+                opportunity.model_copy(
+                    update={
+                        "final_position_pct": final_position_pct,
+                        "portfolio_clamp_reasons": list(dict.fromkeys(clamp_reasons)),
+                        "portfolio_reject_reasons": list(dict.fromkeys(reject_reasons)),
+                        "portfolio_total_position_after": total_used,
+                        "portfolio_symbol_position_after": symbol_used.get(opportunity.symbol, 0.0),
+                        "portfolio_long_exchange_position_after": exchange_used.get(
+                            opportunity.long_exchange.lower(),
+                            0.0,
+                        ),
+                        "portfolio_short_exchange_position_after": exchange_used.get(
+                            opportunity.short_exchange.lower(),
+                            0.0,
+                        ),
+                        "portfolio_rank": rank,
+                        "allocation_priority_label": allocation_priority_label,
+                    }
+                )
+            )
+        return allocated
+
+    @staticmethod
+    def _clamp_size(size: float, cap: float) -> tuple[float, bool]:
+        capped = min(size, max(0.0, cap))
+        return capped, capped < size
 
     @staticmethod
     def _blocking_risk_count(risk_flags: list[str]) -> int:
