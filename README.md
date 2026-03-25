@@ -86,6 +86,7 @@ python3.11 --version
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+cp .env.example .env
 python -m uvicorn app.main:app --reload --loop asyncio
 ```
 
@@ -113,33 +114,6 @@ export HTTPS_PROXY=http://127.0.0.1:9098
 export ALL_PROXY=socks5h://127.0.0.1:9099
 export NO_PROXY=127.0.0.1,localhost
 export no_proxy=127.0.0.1,localhost
-```
-
-## 本地运行
-
-### 1) 创建虚拟环境
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 2) 安装依赖
-
-```bash
-pip install -e .
-```
-
-### 3) 复制环境变量
-
-```bash
-cp .env.example .env
-```
-
-### 4) 启动服务
-
-```bash
-uvicorn app.main:app --reload
 ```
 
 ## API
