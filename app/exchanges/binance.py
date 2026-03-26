@@ -7,6 +7,9 @@ from app.models.market import MarketSnapshot
 
 from .base import ExchangeClient, ExchangeClientError
 
+HOUR_TO_MS = 60 * 60 * 1000
+BINANCE_FUNDING_PERIOD_HOURS = 8
+
 
 class BinanceClient(ExchangeClient):
     name = "binance"
@@ -26,6 +29,13 @@ class BinanceClient(ExchangeClient):
         if not isinstance(payload, dict):
             raise ExchangeClientError("Unexpected Binance payload shape")
 
+        next_funding_time_ms = self._to_int(payload.get("nextFundingTime"))
+        funding_time_ms = None
+        if funding_time_ms is None and next_funding_time_ms is not None:
+            # Binance premiumIndex does not provide current funding settlement time directly.
+            # Derive current settlement timestamp from next settlement minus one funding period.
+            funding_time_ms = next_funding_time_ms - (BINANCE_FUNDING_PERIOD_HOURS * HOUR_TO_MS)
+
         return MarketSnapshot(
             exchange=self.name,
             venue_type=self.venue_type,
@@ -36,7 +46,9 @@ class BinanceClient(ExchangeClient):
             index_price=self._to_float(payload.get("indexPrice")),
             funding_rate=self._to_float(payload.get("lastFundingRate")),
             funding_rate_source="latest_reported",
-            next_funding_time_ms=self._to_int(payload.get("nextFundingTime")),
+            funding_time_ms=funding_time_ms,
+            next_funding_time_ms=next_funding_time_ms,
+            funding_period_hours=BINANCE_FUNDING_PERIOD_HOURS,
             timestamp_ms=int(payload["time"]),
             raw=payload,
         )
