@@ -116,6 +116,7 @@ class Opportunity(BaseModel):
     is_executable_now: bool = False
     max_position_pct: float
     execution_mode: str
+    execution_mode_drivers: list[str] = Field(default_factory=list)
     portfolio_clamp_reasons: list[str] = Field(default_factory=list)
     portfolio_reject_reasons: list[str] = Field(default_factory=list)
     portfolio_total_used_after: float = 0.0

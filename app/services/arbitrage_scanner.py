@@ -61,6 +61,12 @@ LIQUIDITY_RISK_FLAGS = {
     "low_open_interest",
     "low_quote_volume",
 }
+NORMAL_SOFT_RISK_FLAGS = {
+    "mixed_funding_sources",
+    "different_funding_periods",
+    "abnormal_hourly_funding",
+    "low_confidence_funding",
+}
 EXCHANGE_FEE_BPS = {
     "binance": 5.0,
     "okx": 5.0,
@@ -238,20 +244,20 @@ class ArbitrageScannerService:
                     is_primary_route,
                 )
                 conviction_label = self._conviction_label(conviction_score)
-                size_up_eligible = self._size_up_eligible(
-                    opportunity,
-                    conviction_score,
-                    is_primary_route,
-                )
-                execution_mode = self._execution_mode(
-                    opportunity,
-                    conviction_score,
-                    size_up_eligible,
-                )
-                suggested_position_pct = self._suggested_position_pct(
+                baseline_suggested_position_pct = self._baseline_suggested_position_pct(
                     opportunity.position_size_multiplier,
                     conviction_label,
                     opportunity.risk_flags,
+                    opportunity.max_position_pct,
+                )
+                execution_mode, execution_mode_drivers = self._determine_execution_mode(
+                    opportunity,
+                    conviction_score,
+                    baseline_suggested_position_pct,
+                )
+                size_up_eligible = execution_mode == "size_up"
+                suggested_position_pct = self._apply_execution_mode_to_suggested_position_pct(
+                    baseline_suggested_position_pct,
                     execution_mode,
                     opportunity.max_position_pct,
                 )
@@ -262,6 +268,7 @@ class ArbitrageScannerService:
                         "conviction_drivers": conviction_drivers,
                         "size_up_eligible": size_up_eligible,
                         "execution_mode": execution_mode,
+                        "execution_mode_drivers": execution_mode_drivers,
                         "suggested_position_pct": suggested_position_pct,
                     }
                 )
@@ -472,22 +479,6 @@ class ArbitrageScannerService:
         return "low"
 
     @staticmethod
-    def _size_up_eligible(
-        opportunity: Opportunity,
-        conviction_score: float,
-        is_primary_route: bool,
-    ) -> bool:
-        return (
-            opportunity.opportunity_grade == "tradable"
-            and conviction_score >= 0.75
-            and opportunity.funding_confidence_score >= 0.8
-            and "missing_liquidity_data" not in opportunity.risk_flags
-            and "different_funding_periods" not in opportunity.risk_flags
-            and "abnormal_hourly_funding" not in opportunity.risk_flags
-            and is_primary_route
-        )
-
-    @staticmethod
     def _funding_confidence_score(
         long_snapshot: MarketSnapshot,
         short_snapshot: MarketSnapshot,
@@ -566,11 +557,10 @@ class ArbitrageScannerService:
         return reject_reasons
 
     @staticmethod
-    def _suggested_position_pct(
+    def _baseline_suggested_position_pct(
         position_size_multiplier: float,
         conviction_label: str,
         risk_flags: list[str],
-        execution_mode: str,
         max_position_pct: float,
     ) -> float:
         liquidity_factor = ArbitrageScannerService._liquidity_factor(risk_flags)
@@ -580,8 +570,16 @@ class ArbitrageScannerService:
             "low": 0.5,
         }.get(conviction_label, 0.5)
         base_position_pct = BASE_POSITION_PCT * position_size_multiplier * liquidity_factor * conviction_factor
+        return ArbitrageScannerService._apply_position_cap(base_position_pct, max_position_pct)
+
+    @staticmethod
+    def _apply_execution_mode_to_suggested_position_pct(
+        baseline_suggested_position_pct: float,
+        execution_mode: str,
+        max_position_pct: float,
+    ) -> float:
         suggested_position_pct = ArbitrageScannerService._adjust_position_pct_for_execution_mode(
-            base_position_pct,
+            baseline_suggested_position_pct,
             execution_mode,
         )
         return ArbitrageScannerService._apply_position_cap(suggested_position_pct, max_position_pct)
@@ -601,22 +599,67 @@ class ArbitrageScannerService:
         return 0.03
 
     @staticmethod
-    def _execution_mode(
+    def _determine_execution_mode(
         opportunity: Opportunity,
         conviction_score: float,
-        size_up_eligible: bool,
-    ) -> str:
-        if size_up_eligible:
-            return "size_up"
+        baseline_suggested_position_pct: float,
+    ) -> tuple[str, list[str]]:
+        risk_flags = set(opportunity.risk_flags)
+        missing_liquidity = "missing_liquidity_data" in risk_flags
+        soft_risk_count = len(risk_flags & NORMAL_SOFT_RISK_FLAGS)
+        size_up_blocking_flags = {
+            "missing_liquidity_data",
+            "low_confidence_funding",
+            "different_funding_periods",
+            "abnormal_hourly_funding",
+        }
+
+        if baseline_suggested_position_pct <= 0:
+            return "paper", ["paper_due_to_zero_suggested_size"]
+        if opportunity.risk_adjusted_edge_bps < 6:
+            return "paper", ["paper_due_to_low_risk_adjusted_edge"]
+        if missing_liquidity:
+            return "paper", ["paper_due_to_missing_liquidity_data"]
+        if opportunity.funding_confidence_score < 0.45:
+            return "paper", ["paper_due_to_low_funding_confidence"]
+        if conviction_score < 0.20:
+            return "paper", ["paper_due_to_low_conviction"]
+        if (not opportunity.is_primary_route) and conviction_score < 0.45:
+            return "paper", ["paper_due_to_secondary_low_conviction"]
+
         if (
-            opportunity.opportunity_grade == "tradable"
-            and opportunity.is_primary_route
-            and conviction_score >= 0.5
+            opportunity.is_primary_route
+            and opportunity.opportunity_grade == "tradable"
+            and opportunity.risk_adjusted_edge_bps >= 18
+            and conviction_score >= 0.75
+            and opportunity.funding_confidence_score >= 0.80
+            and not (risk_flags & size_up_blocking_flags)
         ):
-            return "normal"
-        if opportunity.opportunity_grade in {"tradable", "watchlist"} and conviction_score >= 0.2:
-            return "small_probe"
-        return "paper"
+            return "size_up", ["primary_route", "tradable", "strong_risk_adjusted_edge"]
+
+        if (
+            opportunity.is_primary_route
+            and opportunity.opportunity_grade == "tradable"
+            and opportunity.risk_adjusted_edge_bps >= 10
+            and conviction_score >= 0.50
+            and opportunity.funding_confidence_score >= 0.55
+            and not missing_liquidity
+            and soft_risk_count <= 1
+        ):
+            return "normal", ["primary_route", "tradable", "meets_normal_thresholds"]
+
+        if (
+            opportunity.risk_adjusted_edge_bps >= 6
+            and conviction_score >= 0.20
+            and opportunity.funding_confidence_score >= 0.45
+            and not missing_liquidity
+        ):
+            drivers = ["below_normal_thresholds"]
+            if "mixed_funding_sources" in risk_flags:
+                drivers.append("mixed_funding_sources")
+            return "small_probe", drivers
+
+        return "paper", ["paper_due_to_execution_rules"]
 
     @staticmethod
     def _adjust_position_pct_for_execution_mode(

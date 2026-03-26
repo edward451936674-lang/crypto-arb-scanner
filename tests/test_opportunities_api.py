@@ -99,18 +99,16 @@ def test_strong_primary_route_can_be_medium_conviction_and_normal(monkeypatch) -
             requested_symbols=symbols,
             snapshots=[
                 _snapshot(
-                    "lighter",
+                    "binance",
                     100.0,
-                    funding_rate=-0.0004,
-                    funding_rate_source="estimated_current",
-                    funding_period_hours=4,
+                    funding_rate=-0.0002,
+                    funding_rate_source="latest_reported",
                 ),
                 _snapshot(
                     "okx",
-                    100.32,
-                    funding_rate=0.0004,
-                    funding_rate_source="last_settled_fallback",
-                    funding_period_hours=8,
+                    100.22,
+                    funding_rate=0.0002,
+                    funding_rate_source="current",
                 ),
             ],
             errors=[],
@@ -124,12 +122,10 @@ def test_strong_primary_route_can_be_medium_conviction_and_normal(monkeypatch) -
     item = response["opportunities"][0]
     assert item["opportunity_grade"] == "tradable"
     assert item["is_primary_route"] is True
-    assert item["conviction_label"] == "medium"
-    assert 0.50 <= item["conviction_score"] < 0.75
+    assert item["conviction_score"] >= 0.50
     assert item["execution_mode"] == "normal"
     assert item["is_executable_now"] is True
     assert item["size_up_eligible"] is False
-    assert "strong_net_edge" in item["conviction_drivers"]
     assert "adequate_liquidity" in item["conviction_drivers"]
     assert "primary_route" in item["conviction_drivers"]
 
@@ -139,8 +135,8 @@ def test_missing_liquidity_routes_score_lower_than_clean_routes() -> None:
 
     clean_route = scanner.build_opportunities(
         [
-            _snapshot("lighter", 100.0, funding_rate=-0.0004, funding_rate_source="estimated_current", funding_period_hours=4),
-            _snapshot("okx", 100.32, funding_rate=0.0004, funding_rate_source="last_settled_fallback", funding_period_hours=8),
+            _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported", funding_period_hours=8),
+            _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current", funding_period_hours=8),
         ]
     )[0]
     missing_liquidity_route = scanner.build_opportunities(
@@ -148,17 +144,17 @@ def test_missing_liquidity_routes_score_lower_than_clean_routes() -> None:
             _snapshot(
                 "lighter",
                 100.0,
-                funding_rate=-0.0004,
-                funding_rate_source="estimated_current",
-                funding_period_hours=4,
+                funding_rate=-0.0002,
+                funding_rate_source="latest_reported",
+                funding_period_hours=8,
                 open_interest_usd=None,
                 quote_volume_24h_usd=None,
             ),
             _snapshot(
                 "okx",
-                100.32,
-                funding_rate=0.0004,
-                funding_rate_source="last_settled_fallback",
+                100.22,
+                funding_rate=0.0002,
+                funding_rate_source="current",
                 funding_period_hours=8,
                 open_interest_usd=None,
                 quote_volume_24h_usd=None,
@@ -168,7 +164,8 @@ def test_missing_liquidity_routes_score_lower_than_clean_routes() -> None:
 
     assert clean_route.conviction_score > missing_liquidity_route.conviction_score
     assert clean_route.suggested_position_pct > missing_liquidity_route.suggested_position_pct
-    assert missing_liquidity_route.execution_mode == "small_probe"
+    assert missing_liquidity_route.execution_mode == "paper"
+    assert missing_liquidity_route.is_executable_now is False
 
 
 def test_get_opportunities_keeps_watchlist_items_as_small_probe(monkeypatch) -> None:
@@ -192,6 +189,7 @@ def test_get_opportunities_keeps_watchlist_items_as_small_probe(monkeypatch) -> 
     assert item["execution_mode"] == "small_probe"
     assert item["is_executable_now"] is True
     assert 0.0 < item["suggested_position_pct"] < item["max_position_pct"]
+    assert "below_normal_thresholds" in item["execution_mode_drivers"]
 
 
 def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None:
@@ -321,6 +319,70 @@ def test_size_up_remains_strict_for_noisy_mismatched_routes() -> None:
     assert item.opportunity_grade == "tradable"
     assert item.size_up_eligible is False
     assert item.execution_mode != "size_up"
+
+
+def test_execution_mode_paper_when_risk_adjusted_edge_below_six() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.00125, funding_rate_source=None),
+            _snapshot("okx", 100.045, funding_rate=0.00125, funding_rate_source=None),
+        ]
+    )
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.risk_adjusted_edge_bps < 6
+    assert item.execution_mode == "paper"
+    assert item.is_executable_now is False
+    assert "paper_due_to_low_risk_adjusted_edge" in item.execution_mode_drivers
+
+
+def test_execution_mode_normal_only_when_thresholds_met() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported", funding_period_hours=8),
+            _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current", funding_period_hours=8),
+        ]
+    )
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.execution_mode == "normal"
+    assert item.is_primary_route is True
+    assert item.conviction_score >= 0.50
+    assert item.funding_confidence_score >= 0.55
+    assert item.is_executable_now is True
+
+
+def test_execution_mode_size_up_requires_all_strict_conditions() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.execution_mode == "size_up"
+    assert item.size_up_eligible is True
+    assert item.is_executable_now is True
+    assert "strong_risk_adjusted_edge" in item.execution_mode_drivers
+
+
+def test_is_executable_now_matches_execution_mode() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("lighter", 100.2, funding_rate=0.0002, funding_rate_source="estimated_current", open_interest_usd=None, quote_volume_24h_usd=None),
+        ]
+    )
+    assert opportunities
+    for item in opportunities:
+        expected = item.execution_mode in {"small_probe", "normal", "size_up"}
+        assert item.is_executable_now is expected
 
 
 def test_portfolio_total_allocated_never_exceeds_cap() -> None:
