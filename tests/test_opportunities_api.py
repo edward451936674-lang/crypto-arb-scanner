@@ -164,8 +164,10 @@ def test_missing_liquidity_routes_score_lower_than_clean_routes() -> None:
 
     assert clean_route.conviction_score > missing_liquidity_route.conviction_score
     assert clean_route.suggested_position_pct > missing_liquidity_route.suggested_position_pct
-    assert missing_liquidity_route.execution_mode == "paper"
-    assert missing_liquidity_route.is_executable_now is False
+    assert missing_liquidity_route.execution_mode == "small_probe"
+    assert missing_liquidity_route.is_executable_now is True
+    assert "small_probe_despite_missing_liquidity_data" in missing_liquidity_route.execution_mode_drivers
+    assert "blocked_from_normal_due_to_missing_liquidity_data" in missing_liquidity_route.execution_mode_drivers
 
 
 def test_get_opportunities_keeps_watchlist_items_as_small_probe(monkeypatch) -> None:

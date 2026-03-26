@@ -618,8 +618,6 @@ class ArbitrageScannerService:
             return "paper", ["paper_due_to_zero_suggested_size"]
         if opportunity.risk_adjusted_edge_bps < 6:
             return "paper", ["paper_due_to_low_risk_adjusted_edge"]
-        if missing_liquidity:
-            return "paper", ["paper_due_to_missing_liquidity_data"]
         if opportunity.funding_confidence_score < 0.45:
             return "paper", ["paper_due_to_low_funding_confidence"]
         if conviction_score < 0.20:
@@ -647,6 +645,17 @@ class ArbitrageScannerService:
             and soft_risk_count <= 1
         ):
             return "normal", ["primary_route", "tradable", "meets_normal_thresholds"]
+
+        if (
+            missing_liquidity
+            and opportunity.is_primary_route
+            and opportunity.risk_adjusted_edge_bps >= 10
+            and opportunity.funding_confidence_score >= 0.45
+        ):
+            return "small_probe", [
+                "small_probe_despite_missing_liquidity_data",
+                "blocked_from_normal_due_to_missing_liquidity_data",
+            ]
 
         if (
             opportunity.risk_adjusted_edge_bps >= 6
