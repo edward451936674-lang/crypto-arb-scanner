@@ -619,9 +619,9 @@ class ArbitrageScannerService:
         if opportunity.opportunity_grade == "tradable":
             positive_drivers.append("tradable")
         if conviction_score >= 0.20:
-            positive_drivers.append("adequate_conviction")
+            positive_drivers.append("meets_small_probe_conviction")
         if opportunity.funding_confidence_score >= 0.45:
-            positive_drivers.append("adequate_funding_confidence")
+            positive_drivers.append("meets_small_probe_funding_confidence")
         if not missing_liquidity:
             positive_drivers.append("complete_liquidity_data")
 
