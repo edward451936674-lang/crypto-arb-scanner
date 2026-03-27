@@ -191,7 +191,7 @@ def test_get_opportunities_keeps_watchlist_items_as_small_probe(monkeypatch) -> 
     assert item["execution_mode"] == "small_probe"
     assert item["is_executable_now"] is True
     assert 0.0 < item["suggested_position_pct"] < item["max_position_pct"]
-    assert "below_normal_thresholds" in item["execution_mode_drivers"]
+    assert "below_normal_edge_threshold" in item["execution_mode_drivers"]
 
 
 def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None:

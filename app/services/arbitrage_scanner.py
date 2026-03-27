@@ -613,6 +613,35 @@ class ArbitrageScannerService:
             "different_funding_periods",
             "abnormal_hourly_funding",
         }
+        positive_drivers: list[str] = []
+        if opportunity.is_primary_route:
+            positive_drivers.append("primary_route")
+        if opportunity.opportunity_grade == "tradable":
+            positive_drivers.append("tradable")
+        if conviction_score >= 0.20:
+            positive_drivers.append("adequate_conviction")
+        if opportunity.funding_confidence_score >= 0.45:
+            positive_drivers.append("adequate_funding_confidence")
+        if not missing_liquidity:
+            positive_drivers.append("complete_liquidity_data")
+
+        gap_drivers: list[str] = []
+        if opportunity.risk_adjusted_edge_bps < 10:
+            gap_drivers.append("below_normal_edge_threshold")
+        if conviction_score < 0.50:
+            gap_drivers.append("below_normal_conviction")
+        if opportunity.funding_confidence_score < 0.55:
+            gap_drivers.append("below_normal_funding_confidence")
+        if soft_risk_count > 1:
+            gap_drivers.append("multiple_soft_risk_flags")
+        if "mixed_funding_sources" in risk_flags:
+            gap_drivers.append("mixed_funding_sources")
+        if "different_funding_periods" in risk_flags:
+            gap_drivers.append("different_funding_periods")
+        if "low_confidence_funding" in risk_flags:
+            gap_drivers.append("low_confidence_funding")
+        if "abnormal_hourly_funding" in risk_flags:
+            gap_drivers.append("abnormal_hourly_funding")
 
         if baseline_suggested_position_pct <= 0:
             return "paper", ["paper_due_to_zero_suggested_size"]
@@ -633,7 +662,9 @@ class ArbitrageScannerService:
             and opportunity.funding_confidence_score >= 0.80
             and not (risk_flags & size_up_blocking_flags)
         ):
-            return "size_up", ["primary_route", "tradable", "strong_risk_adjusted_edge"]
+            return "size_up", list(
+                dict.fromkeys(positive_drivers + ["strong_risk_adjusted_edge", "meets_size_up_thresholds"])
+            )
 
         if (
             opportunity.is_primary_route
@@ -644,7 +675,7 @@ class ArbitrageScannerService:
             and not missing_liquidity
             and soft_risk_count <= 1
         ):
-            return "normal", ["primary_route", "tradable", "meets_normal_thresholds"]
+            return "normal", list(dict.fromkeys(positive_drivers + ["meets_normal_thresholds"]))
 
         if (
             missing_liquidity
@@ -652,10 +683,15 @@ class ArbitrageScannerService:
             and opportunity.risk_adjusted_edge_bps >= 10
             and opportunity.funding_confidence_score >= 0.45
         ):
-            return "small_probe", [
-                "small_probe_despite_missing_liquidity_data",
-                "blocked_from_normal_due_to_missing_liquidity_data",
-            ]
+            return "small_probe", list(
+                dict.fromkeys(
+                    positive_drivers
+                    + [
+                        "small_probe_despite_missing_liquidity_data",
+                        "blocked_from_normal_due_to_missing_liquidity_data",
+                    ]
+                )
+            )
 
         if (
             opportunity.risk_adjusted_edge_bps >= 6
@@ -663,9 +699,9 @@ class ArbitrageScannerService:
             and opportunity.funding_confidence_score >= 0.45
             and not missing_liquidity
         ):
-            drivers = ["below_normal_thresholds"]
-            if "mixed_funding_sources" in risk_flags:
-                drivers.append("mixed_funding_sources")
+            drivers = list(dict.fromkeys(positive_drivers + gap_drivers))
+            if not gap_drivers:
+                drivers.append("below_normal_thresholds")
             return "small_probe", drivers
 
         return "paper", ["paper_due_to_execution_rules"]
