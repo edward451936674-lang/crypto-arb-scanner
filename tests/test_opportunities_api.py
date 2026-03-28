@@ -545,3 +545,42 @@ def test_get_opportunities_mixed_collection_uses_only_gate_accepted(monkeypatch)
 
     response = asyncio.run(get_opportunities(symbols="BTC"))
     assert len(response["opportunities"]) == 1
+
+
+def test_get_opportunities_passes_only_gate_accepted_snapshots_to_scanner(monkeypatch) -> None:
+    now_ms = int(time.time() * 1000)
+    healthy = _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported")
+    healthy.timestamp_ms = now_ms
+    degraded = _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current")
+    degraded.timestamp_ms = now_ms - 130_000
+    suspicious = _snapshot("hyperliquid", 100.5, index_price=200.0, last_price=200.0)
+    suspicious.timestamp_ms = now_ms
+    invalid = _snapshot("lighter", 99.5)
+    invalid.timestamp_ms = now_ms
+    invalid.mark_price = -2.0
+
+    captured: dict[str, list[MarketSnapshot]] = {}
+
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[healthy, degraded, suspicious, invalid],
+            errors=[],
+        )
+
+    def fake_build_opportunities(
+        self: ArbitrageScannerService,
+        snapshots: list[MarketSnapshot],
+    ) -> list[object]:
+        captured["snapshots"] = snapshots
+        return []
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert response["opportunities"] == []
+    assert [snapshot.exchange for snapshot in captured["snapshots"]] == ["binance", "okx"]
+    assert captured["snapshots"][0] is healthy
+    assert captured["snapshots"][1] is degraded

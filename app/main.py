@@ -69,11 +69,12 @@ async def get_opportunities(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    quality_result = quality_gate.evaluate(market_data.snapshots)
+    accepted_snapshots = quality_result.accepted_snapshots
+
     response = OpportunitiesResponse(
         requested_symbols=market_data.requested_symbols,
-        opportunities=scanner.build_opportunities(
-            quality_gate.evaluate(market_data.snapshots).accepted_snapshots
-        ),
+        opportunities=scanner.build_opportunities(accepted_snapshots),
         snapshot_errors=market_data.errors,
     )
     return response.model_dump()
