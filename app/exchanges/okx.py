@@ -74,6 +74,7 @@ class OkxClient(ExchangeClient):
                     funding_rate_source=funding_source,
                     funding_time_ms=funding_time_ms,
                     next_funding_time_ms=next_funding_time_ms,
+                    funding_period_hours=8,
                     timestamp_ms=timestamp_ms,
                     raw={"mark": mark_payload, "funding": funding_payload or {}},
                 )
