@@ -37,10 +37,17 @@ class MarketDataQualityGate:
         for snapshot in snapshots:
             report = self._evaluate_snapshot(snapshot, now_ms, cross_exchange_flags.get(id(snapshot), []))
             reports.append(report)
+            snapshot_with_quality = snapshot.model_copy(
+                update={
+                    "data_quality_status": report.quality_status,
+                    "data_quality_score": report.quality_score,
+                    "data_quality_flags": report.quality_flags,
+                }
+            )
             if report.quality_status in {"healthy", "degraded"}:
-                accepted.append(snapshot)
+                accepted.append(snapshot_with_quality)
             else:
-                rejected.append(snapshot)
+                rejected.append(snapshot_with_quality)
 
         healthy_count = sum(1 for report in reports if report.quality_status == "healthy")
         degraded_count = sum(1 for report in reports if report.quality_status == "degraded")

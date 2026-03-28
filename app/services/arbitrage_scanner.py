@@ -47,6 +47,16 @@ EXECUTION_MODE_PRIORITY = {
     "normal": 2,
     "size_up": 3,
 }
+DATA_QUALITY_SEVERITY = {
+    "healthy": 0,
+    "degraded": 1,
+    "suspicious": 2,
+    "invalid": 3,
+}
+DATA_QUALITY_PENALTY_MULTIPLIER = {
+    "healthy": 1.0,
+    "degraded": 0.85,
+}
 BLOCKING_RISK_FLAGS = {
     "mixed_funding_sources",
     "low_confidence_funding",
@@ -172,8 +182,22 @@ class ArbitrageScannerService:
 
         funding_confidence_score = self._funding_confidence_score(long_snapshot, short_snapshot)
         funding_confidence_label = self._funding_confidence_label(funding_confidence_score)
-        risk_flags = self._risk_flags(long_snapshot, short_snapshot, funding_confidence_score)
+        (
+            data_quality_status,
+            data_quality_score,
+            data_quality_flags,
+            data_quality_drivers,
+        ) = self._opportunity_data_quality(long_snapshot, short_snapshot)
+        data_quality_penalty_multiplier = DATA_QUALITY_PENALTY_MULTIPLIER.get(data_quality_status, 0.85)
+        risk_flags = self._risk_flags(
+            long_snapshot,
+            short_snapshot,
+            funding_confidence_score,
+            data_quality_status,
+            data_quality_flags,
+        )
         risk_adjusted_edge_bps = net_edge_bps * funding_confidence_score
+        data_quality_adjusted_edge_bps = risk_adjusted_edge_bps * data_quality_penalty_multiplier
         is_tradable = risk_adjusted_edge_bps >= 8
         opportunity_grade = self._opportunity_grade(risk_adjusted_edge_bps, is_tradable)
         if opportunity_grade == "discard":
@@ -208,6 +232,12 @@ class ArbitrageScannerService:
             funding_confidence_score=funding_confidence_score,
             funding_confidence_label=funding_confidence_label,
             risk_adjusted_edge_bps=risk_adjusted_edge_bps,
+            data_quality_status=data_quality_status,
+            data_quality_score=data_quality_score,
+            data_quality_flags=data_quality_flags,
+            data_quality_drivers=data_quality_drivers,
+            data_quality_penalty_multiplier=data_quality_penalty_multiplier,
+            data_quality_adjusted_edge_bps=data_quality_adjusted_edge_bps,
             risk_flags=risk_flags,
             opportunity_grade=opportunity_grade,
             is_tradable=is_tradable,
@@ -261,6 +291,11 @@ class ArbitrageScannerService:
                     execution_mode,
                     opportunity.max_position_pct,
                 )
+                suggested_position_pct *= opportunity.data_quality_penalty_multiplier
+                suggested_position_pct = self._apply_position_cap(
+                    suggested_position_pct,
+                    opportunity.max_position_pct,
+                )
                 candidate.opportunity = opportunity.model_copy(
                     update={
                         "conviction_score": conviction_score,
@@ -282,7 +317,7 @@ class ArbitrageScannerService:
     def _cluster_rank_key(candidate: OpportunityCandidate) -> tuple[float, float, int, int, float]:
         opportunity = candidate.opportunity
         return (
-            -opportunity.risk_adjusted_edge_bps,
+            -opportunity.data_quality_adjusted_edge_bps,
             -opportunity.net_edge_bps,
             -opportunity.funding_confidence_score,
             ArbitrageScannerService._missing_liquidity_count(opportunity.risk_flags),
@@ -296,7 +331,7 @@ class ArbitrageScannerService:
             EXECUTION_MODE_PRIORITY.get(opportunity.execution_mode, -1),
             opportunity.is_primary_route,
             opportunity.conviction_score,
-            opportunity.risk_adjusted_edge_bps,
+            opportunity.data_quality_adjusted_edge_bps,
             opportunity.funding_confidence_score,
         )
 
@@ -510,6 +545,8 @@ class ArbitrageScannerService:
         long_snapshot: MarketSnapshot,
         short_snapshot: MarketSnapshot,
         funding_confidence_score: float,
+        data_quality_status: str,
+        data_quality_flags: list[str],
     ) -> list[str]:
         flags: list[str] = []
         if long_snapshot.funding_rate_source != short_snapshot.funding_rate_source:
@@ -533,7 +570,50 @@ class ArbitrageScannerService:
             flags.append("low_quote_volume")
         if funding_confidence_score < 0.55:
             flags.append("low_confidence_funding")
-        return flags
+        if data_quality_status != "healthy":
+            flags.append("degraded_data_quality")
+        if self._has_cross_exchange_quality_flag(data_quality_flags):
+            flags.append("cross_exchange_price_quality_risk")
+        return list(dict.fromkeys(flags))
+
+    @staticmethod
+    def _snapshot_quality_status(snapshot: MarketSnapshot) -> str:
+        return snapshot.data_quality_status or "healthy"
+
+    @staticmethod
+    def _snapshot_quality_score(snapshot: MarketSnapshot) -> float:
+        return snapshot.data_quality_score if snapshot.data_quality_score is not None else 1.0
+
+    @staticmethod
+    def _has_cross_exchange_quality_flag(flags: list[str]) -> bool:
+        return any("cross_exchange_price_outlier" in flag for flag in flags)
+
+    def _opportunity_data_quality(
+        self,
+        long_snapshot: MarketSnapshot,
+        short_snapshot: MarketSnapshot,
+    ) -> tuple[str, float, list[str], list[str]]:
+        long_status = self._snapshot_quality_status(long_snapshot)
+        short_status = self._snapshot_quality_status(short_snapshot)
+        status = max((long_status, short_status), key=lambda value: DATA_QUALITY_SEVERITY.get(value, 99))
+        score = min(self._snapshot_quality_score(long_snapshot), self._snapshot_quality_score(short_snapshot))
+        flags = list(
+            dict.fromkeys(
+                list(long_snapshot.data_quality_flags or [])
+                + list(short_snapshot.data_quality_flags or [])
+            )
+        )
+        drivers: list[str] = []
+        degraded_count = sum(1 for value in (long_status, short_status) if value == "degraded")
+        if degraded_count == 0 and status == "healthy":
+            drivers.append("both_legs_healthy")
+        elif degraded_count == 1:
+            drivers.append("one_leg_degraded")
+        elif degraded_count >= 2:
+            drivers.append("both_legs_degraded")
+        if self._has_cross_exchange_quality_flag(flags):
+            drivers.append("degraded_cross_exchange_price_signal")
+        return status, score, flags, drivers
 
     @staticmethod
     def _opportunity_grade(risk_adjusted_edge_bps: float, is_tradable: bool) -> str:
@@ -653,6 +733,9 @@ class ArbitrageScannerService:
             return "paper", ["paper_due_to_low_conviction"]
         if (not opportunity.is_primary_route) and conviction_score < 0.45:
             return "paper", ["paper_due_to_secondary_low_conviction"]
+        if opportunity.data_quality_status != "healthy":
+            size_up_blocking_flags = set(size_up_blocking_flags)
+            size_up_blocking_flags.add("degraded_data_quality")
 
         if (
             opportunity.is_primary_route

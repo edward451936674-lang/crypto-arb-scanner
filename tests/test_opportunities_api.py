@@ -582,5 +582,67 @@ def test_get_opportunities_passes_only_gate_accepted_snapshots_to_scanner(monkey
 
     assert response["opportunities"] == []
     assert [snapshot.exchange for snapshot in captured["snapshots"]] == ["binance", "okx"]
-    assert captured["snapshots"][0] is healthy
-    assert captured["snapshots"][1] is degraded
+    assert captured["snapshots"][0].data_quality_status == "healthy"
+    assert captured["snapshots"][1].data_quality_status == "degraded"
+
+
+def test_degraded_quality_propagates_to_opportunity_risk_ranking_and_sizing() -> None:
+    scanner = ArbitrageScannerService()
+    healthy_opportunity = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0]
+    degraded_leg = _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported").model_copy(
+        update={
+            "data_quality_status": "degraded",
+            "data_quality_score": 0.75,
+            "data_quality_flags": ["cross_exchange_price_outlier"],
+        }
+    )
+    degraded_opportunity = scanner.build_opportunities(
+        [
+            degraded_leg,
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0]
+
+    assert degraded_opportunity.data_quality_status == "degraded"
+    assert degraded_opportunity.data_quality_score == 0.75
+    assert "cross_exchange_price_outlier" in degraded_opportunity.data_quality_flags
+    assert "one_leg_degraded" in degraded_opportunity.data_quality_drivers
+    assert "degraded_cross_exchange_price_signal" in degraded_opportunity.data_quality_drivers
+    assert degraded_opportunity.data_quality_penalty_multiplier == 0.85
+    assert degraded_opportunity.data_quality_adjusted_edge_bps == (
+        degraded_opportunity.risk_adjusted_edge_bps * degraded_opportunity.data_quality_penalty_multiplier
+    )
+    assert "degraded_data_quality" in degraded_opportunity.risk_flags
+    assert "cross_exchange_price_quality_risk" in degraded_opportunity.risk_flags
+    assert degraded_opportunity.suggested_position_pct < healthy_opportunity.suggested_position_pct
+    assert degraded_opportunity.execution_mode != "size_up"
+    assert degraded_opportunity.size_up_eligible is False
+
+
+def test_degraded_quality_blocks_size_up_for_otherwise_size_up_candidate() -> None:
+    scanner = ArbitrageScannerService()
+    degraded_long = _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported").model_copy(
+        update={
+            "data_quality_status": "degraded",
+            "data_quality_score": 0.8,
+            "data_quality_flags": ["timestamp_stale"],
+        }
+    )
+    opportunities = scanner.build_opportunities(
+        [
+            degraded_long,
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.data_quality_status == "degraded"
+    assert item.execution_mode in {"small_probe", "normal"}
+    assert item.execution_mode != "size_up"
+    assert item.size_up_eligible is False
