@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from app.main import get_opportunities
 from app.models.market import MarketDataResponse, MarketSnapshot
@@ -11,6 +12,8 @@ def _snapshot(
     mark_price: float,
     *,
     base_symbol: str = "BTC",
+    index_price: float | None = None,
+    last_price: float | None = None,
     funding_rate: float = 0.0,
     funding_rate_source: str = "current",
     funding_period_hours: int = 8,
@@ -24,12 +27,14 @@ def _snapshot(
         normalized_symbol=f"{base_symbol}-USDT-PERP",
         instrument_id=f"{exchange}-{base_symbol}",
         mark_price=mark_price,
+        index_price=index_price,
+        last_price=last_price,
         funding_rate=funding_rate,
         funding_rate_source=funding_rate_source,
         funding_period_hours=funding_period_hours,
         open_interest_usd=open_interest_usd,
         quote_volume_24h_usd=quote_volume_24h_usd,
-        timestamp_ms=1710000100000,
+        timestamp_ms=int(time.time() * 1000),
     )
 
 
@@ -210,7 +215,7 @@ def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None
                     "okx",
                     100.24,
                     funding_rate_source="last_settled_fallback",
-                    funding_period_hours=4,
+                    funding_period_hours=8,
                     open_interest_usd=None,
                     quote_volume_24h_usd=None,
                 ),
@@ -453,3 +458,90 @@ def test_opportunities_still_visible_when_final_allocation_zero() -> None:
     zero_alloc = [item for item in opportunities if item.final_position_pct == 0.0]
     assert zero_alloc
     assert all(item.portfolio_rank is not None for item in zero_alloc)
+
+
+def test_get_opportunities_excludes_invalid_snapshots_before_scanner(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        invalid = _snapshot("hyperliquid", 102.0)
+        invalid.mark_price = -1.0
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+                invalid,
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    assert len(response["opportunities"]) == 1
+
+
+def test_get_opportunities_excludes_suspicious_snapshots_before_scanner(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        suspicious = _snapshot(
+            "hyperliquid",
+            100.5,
+            index_price=200.0,
+            last_price=200.0,
+        )
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+                suspicious,
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    assert len(response["opportunities"]) == 1
+
+
+def test_get_opportunities_accepts_healthy_and_degraded_snapshots(monkeypatch) -> None:
+    now_ms = int(time.time() * 1000)
+
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        healthy = _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported")
+        healthy.timestamp_ms = now_ms
+        degraded = _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current")
+        degraded.timestamp_ms = now_ms - 130_000
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[healthy, degraded],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    assert len(response["opportunities"]) == 1
+
+
+def test_get_opportunities_mixed_collection_uses_only_gate_accepted(monkeypatch) -> None:
+    now_ms = int(time.time() * 1000)
+
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        healthy = _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported")
+        healthy.timestamp_ms = now_ms
+        degraded = _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current")
+        degraded.timestamp_ms = now_ms - 130_000
+        suspicious = _snapshot("hyperliquid", 100.5, index_price=200.0, last_price=200.0)
+        invalid = _snapshot("lighter", 99.5)
+        invalid.mark_price = -2.0
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[healthy, degraded, suspicious, invalid],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    assert len(response["opportunities"]) == 1

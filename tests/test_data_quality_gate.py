@@ -198,3 +198,16 @@ def test_invalid_snapshot_rejected_from_scanner_admission() -> None:
     assert report.can_enter_scanner is False
     assert report.watchlist_only is False
     assert result.rejected_count == 1
+
+
+def test_basis_checks_do_not_crash_when_mark_price_missing_and_index_present() -> None:
+    now_ms = 1_710_000_100_000
+    malformed = _snapshot(timestamp_ms=now_ms).model_copy(
+        update={"mark_price": None, "index_price": 100.0, "last_price": 100.0}
+    )
+
+    result = MarketDataQualityGate(now_ms=now_ms).evaluate([malformed])
+    report = result.snapshot_reports[0]
+
+    assert report.quality_status == "invalid"
+    assert "missing_mark_price" in report.quality_blockers

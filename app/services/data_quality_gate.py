@@ -212,6 +212,9 @@ class MarketDataQualityGate:
 
     @staticmethod
     def _basis_warning_checks(snapshot: MarketSnapshot, warnings: list[str]) -> None:
+        if snapshot.mark_price is None or snapshot.mark_price <= FLOAT_TOLERANCE:
+            return
+
         if snapshot.index_price not in (None, 0):
             mark_index_basis = abs(snapshot.mark_price - snapshot.index_price) / abs(snapshot.index_price)
             if mark_index_basis >= MARK_INDEX_BASIS_SUSPICIOUS:

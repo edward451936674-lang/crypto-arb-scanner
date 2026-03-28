@@ -4,6 +4,7 @@ from app.core.config import get_settings
 from app.core.symbols import parse_symbols, supported_symbols
 from app.models.market import OpportunitiesResponse
 from app.services.arbitrage_scanner import ArbitrageScannerService
+from app.services.data_quality_gate import MarketDataQualityGate
 from app.services.market_data import MarketDataService
 
 settings = get_settings()
@@ -61,6 +62,7 @@ async def get_opportunities(
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
     market_data_service = MarketDataService(settings)
     scanner = ArbitrageScannerService()
+    quality_gate = MarketDataQualityGate()
 
     try:
         market_data = await market_data_service.fetch_snapshots(requested_symbols)
@@ -69,7 +71,9 @@ async def get_opportunities(
 
     response = OpportunitiesResponse(
         requested_symbols=market_data.requested_symbols,
-        opportunities=scanner.build_opportunities(market_data.snapshots),
+        opportunities=scanner.build_opportunities(
+            quality_gate.evaluate(market_data.snapshots).accepted_snapshots
+        ),
         snapshot_errors=market_data.errors,
     )
     return response.model_dump()
