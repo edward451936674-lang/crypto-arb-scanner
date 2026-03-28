@@ -164,6 +164,13 @@ def test_accepted_snapshots_include_only_healthy_or_degraded() -> None:
     assert "healthy" in statuses
     assert "degraded" in statuses
     assert "invalid" in statuses
+    accepted_by_exchange = {snapshot.exchange: snapshot for snapshot in result.accepted_snapshots}
+    assert accepted_by_exchange["binance"].data_quality_status == "healthy"
+    assert accepted_by_exchange["okx"].data_quality_status == "degraded"
+    assert accepted_by_exchange["binance"].data_quality_score is not None
+    assert isinstance(accepted_by_exchange["binance"].data_quality_flags, list)
+    assert accepted_by_exchange["okx"].data_quality_score is not None
+    assert "timestamp_stale" in accepted_by_exchange["okx"].data_quality_flags
 
 
 def test_suspicious_snapshot_rejected_from_scanner_admission() -> None:
