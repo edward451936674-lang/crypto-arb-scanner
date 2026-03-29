@@ -33,6 +33,9 @@ class MarketSnapshot(BaseModel):
     hourly_funding_rate_bps: float | None = None
     open_interest_usd: float | None = None
     quote_volume_24h_usd: float | None = None
+    data_quality_status: str | None = None
+    data_quality_score: float | None = None
+    data_quality_flags: list[str] = Field(default_factory=list)
     timestamp_ms: int
     raw: dict[str, Any] = Field(default_factory=dict)
 
@@ -106,6 +109,16 @@ class Opportunity(BaseModel):
     conviction_drivers: list[str] = Field(default_factory=list)
     size_up_eligible: bool = False
     risk_adjusted_edge_bps: float
+    data_quality_status: str = "healthy"
+    data_quality_score: float = 1.0
+    data_quality_flags: list[str] = Field(default_factory=list)
+    data_quality_drivers: list[str] = Field(default_factory=list)
+    data_quality_penalty_multiplier: float = 1.0
+    data_quality_adjusted_edge_bps: float = 0.0
+    edge_buffer_bps: float = 0.0
+    normal_required_edge_bps: float = 0.0
+    normal_eligibility_score: float = 0.0
+    normal_eligibility_drivers: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     opportunity_grade: str
     is_tradable: bool
