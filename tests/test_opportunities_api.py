@@ -358,6 +358,9 @@ def test_execution_mode_normal_only_when_thresholds_met() -> None:
     assert item.is_primary_route is True
     assert item.conviction_score >= 0.50
     assert item.funding_confidence_score >= 0.55
+    assert item.normal_required_edge_bps == 10.0
+    assert item.edge_buffer_bps >= 0.0
+    assert item.normal_eligibility_score > 0.0
     assert item.is_executable_now is True
 
 
@@ -616,6 +619,9 @@ def test_degraded_quality_propagates_to_opportunity_risk_ranking_and_sizing() ->
     assert degraded_opportunity.data_quality_penalty_multiplier == 0.85
     assert degraded_opportunity.data_quality_adjusted_edge_bps == (
         degraded_opportunity.risk_adjusted_edge_bps * degraded_opportunity.data_quality_penalty_multiplier
+    )
+    assert degraded_opportunity.edge_buffer_bps == (
+        degraded_opportunity.data_quality_adjusted_edge_bps - degraded_opportunity.normal_required_edge_bps
     )
     assert "degraded_data_quality" in degraded_opportunity.risk_flags
     assert "cross_exchange_price_quality_risk" in degraded_opportunity.risk_flags
