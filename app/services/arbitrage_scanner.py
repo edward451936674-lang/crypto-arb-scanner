@@ -76,6 +76,9 @@ NORMAL_SOFT_RISK_FLAGS = {
     "different_funding_periods",
     "abnormal_hourly_funding",
     "low_confidence_funding",
+    "degraded_data_quality",
+    "cross_exchange_price_quality_risk",
+    "missing_liquidity_data",
 }
 EXCHANGE_FEE_BPS = {
     "binance": 5.0,
@@ -198,6 +201,12 @@ class ArbitrageScannerService:
         )
         risk_adjusted_edge_bps = net_edge_bps * funding_confidence_score
         data_quality_adjusted_edge_bps = risk_adjusted_edge_bps * data_quality_penalty_multiplier
+        normal_required_edge_bps = self._normal_required_edge_bps()
+        edge_buffer_bps = data_quality_adjusted_edge_bps - normal_required_edge_bps
+        normal_eligibility_score = self._normal_eligibility_score(
+            edge_buffer_bps,
+            funding_confidence_score,
+        )
         is_tradable = risk_adjusted_edge_bps >= 8
         opportunity_grade = self._opportunity_grade(risk_adjusted_edge_bps, is_tradable)
         if opportunity_grade == "discard":
@@ -238,6 +247,9 @@ class ArbitrageScannerService:
             data_quality_drivers=data_quality_drivers,
             data_quality_penalty_multiplier=data_quality_penalty_multiplier,
             data_quality_adjusted_edge_bps=data_quality_adjusted_edge_bps,
+            normal_required_edge_bps=normal_required_edge_bps,
+            edge_buffer_bps=edge_buffer_bps,
+            normal_eligibility_score=normal_eligibility_score,
             risk_flags=risk_flags,
             opportunity_grade=opportunity_grade,
             is_tradable=is_tradable,
@@ -280,7 +292,13 @@ class ArbitrageScannerService:
                     opportunity.risk_flags,
                     opportunity.max_position_pct,
                 )
-                execution_mode, execution_mode_drivers = self._determine_execution_mode(
+                (
+                    execution_mode,
+                    execution_mode_drivers,
+                    soft_risk_flag_count,
+                    normal_blockers,
+                    normal_promotion_reasons,
+                ) = self._determine_execution_mode(
                     opportunity,
                     conviction_score,
                     baseline_suggested_position_pct,
@@ -304,6 +322,9 @@ class ArbitrageScannerService:
                         "size_up_eligible": size_up_eligible,
                         "execution_mode": execution_mode,
                         "execution_mode_drivers": execution_mode_drivers,
+                        "soft_risk_flag_count": soft_risk_flag_count,
+                        "normal_blockers": normal_blockers,
+                        "normal_promotion_reasons": normal_promotion_reasons,
                         "suggested_position_pct": suggested_position_pct,
                     }
                 )
@@ -679,14 +700,24 @@ class ArbitrageScannerService:
         return 0.03
 
     @staticmethod
+    def _normal_required_edge_bps() -> float:
+        return 10.0
+
+    @staticmethod
+    def _normal_eligibility_score(edge_buffer_bps: float, funding_confidence_score: float) -> float:
+        edge_component = max(0.0, min(1.0, (edge_buffer_bps + 6.0) / 12.0))
+        return max(0.0, min(1.0, (edge_component * 0.6) + (funding_confidence_score * 0.4)))
+
+    @staticmethod
     def _determine_execution_mode(
         opportunity: Opportunity,
         conviction_score: float,
         baseline_suggested_position_pct: float,
-    ) -> tuple[str, list[str]]:
+    ) -> tuple[str, list[str], int, list[str], list[str]]:
         risk_flags = set(opportunity.risk_flags)
         missing_liquidity = "missing_liquidity_data" in risk_flags
-        soft_risk_count = len(risk_flags & NORMAL_SOFT_RISK_FLAGS)
+        soft_risk_flags = sorted(risk_flags & NORMAL_SOFT_RISK_FLAGS)
+        soft_risk_count = len(soft_risk_flags)
         size_up_blocking_flags = {
             "missing_liquidity_data",
             "low_confidence_funding",
@@ -705,8 +736,40 @@ class ArbitrageScannerService:
         if not missing_liquidity:
             positive_drivers.append("complete_liquidity_data")
 
+        normal_blockers: list[str] = []
+        normal_promotion_reasons: list[str] = []
+        if opportunity.edge_buffer_bps < 0:
+            normal_blockers.append("negative_edge_buffer_for_normal")
+        else:
+            normal_promotion_reasons.append("edge_buffer_non_negative")
+        if conviction_score < 0.50:
+            normal_blockers.append("insufficient_conviction_for_normal")
+        else:
+            normal_promotion_reasons.append("conviction_meets_normal")
+        if opportunity.funding_confidence_score < 0.55:
+            normal_blockers.append("insufficient_funding_confidence_for_normal")
+        else:
+            normal_promotion_reasons.append("funding_confidence_meets_normal")
+        if soft_risk_count > 2:
+            normal_blockers.append("too_many_soft_risk_flags_for_normal")
+            normal_blockers.extend(f"soft_risk:{flag}" for flag in soft_risk_flags)
+        else:
+            normal_promotion_reasons.append("soft_risk_count_within_normal_limit")
+        if missing_liquidity:
+            normal_blockers.append("missing_liquidity_data_for_normal")
+        else:
+            normal_promotion_reasons.append("liquidity_data_complete_for_normal")
+        if opportunity.is_primary_route:
+            normal_promotion_reasons.append("primary_route")
+        else:
+            normal_blockers.append("secondary_route_for_normal")
+        if opportunity.opportunity_grade == "tradable":
+            normal_promotion_reasons.append("tradable_grade")
+        else:
+            normal_blockers.append("non_tradable_grade_for_normal")
+
         gap_drivers: list[str] = []
-        if opportunity.risk_adjusted_edge_bps < 10:
+        if opportunity.edge_buffer_bps < 0:
             gap_drivers.append("below_normal_edge_threshold")
         if conviction_score < 0.50:
             gap_drivers.append("below_normal_conviction")
@@ -724,15 +787,15 @@ class ArbitrageScannerService:
             gap_drivers.append("abnormal_hourly_funding")
 
         if baseline_suggested_position_pct <= 0:
-            return "paper", ["paper_due_to_zero_suggested_size"]
+            return "paper", ["paper_due_to_zero_suggested_size"], soft_risk_count, normal_blockers, normal_promotion_reasons
         if opportunity.risk_adjusted_edge_bps < 6:
-            return "paper", ["paper_due_to_low_risk_adjusted_edge"]
+            return "paper", ["paper_due_to_low_risk_adjusted_edge"], soft_risk_count, normal_blockers, normal_promotion_reasons
         if opportunity.funding_confidence_score < 0.45:
-            return "paper", ["paper_due_to_low_funding_confidence"]
+            return "paper", ["paper_due_to_low_funding_confidence"], soft_risk_count, normal_blockers, normal_promotion_reasons
         if conviction_score < 0.20:
-            return "paper", ["paper_due_to_low_conviction"]
+            return "paper", ["paper_due_to_low_conviction"], soft_risk_count, normal_blockers, normal_promotion_reasons
         if (not opportunity.is_primary_route) and conviction_score < 0.45:
-            return "paper", ["paper_due_to_secondary_low_conviction"]
+            return "paper", ["paper_due_to_secondary_low_conviction"], soft_risk_count, normal_blockers, normal_promotion_reasons
         if opportunity.data_quality_status != "healthy":
             size_up_blocking_flags = set(size_up_blocking_flags)
             size_up_blocking_flags.add("degraded_data_quality")
@@ -747,18 +810,24 @@ class ArbitrageScannerService:
         ):
             return "size_up", list(
                 dict.fromkeys(positive_drivers + ["strong_risk_adjusted_edge", "meets_size_up_thresholds"])
-            )
+            ), soft_risk_count, normal_blockers, normal_promotion_reasons
 
         if (
             opportunity.is_primary_route
             and opportunity.opportunity_grade == "tradable"
-            and opportunity.risk_adjusted_edge_bps >= 10
+            and opportunity.edge_buffer_bps >= 0
             and conviction_score >= 0.50
             and opportunity.funding_confidence_score >= 0.55
             and not missing_liquidity
-            and soft_risk_count <= 1
+            and soft_risk_count <= 2
         ):
-            return "normal", list(dict.fromkeys(positive_drivers + ["meets_normal_thresholds"]))
+            return (
+                "normal",
+                list(dict.fromkeys(positive_drivers + ["meets_normal_thresholds"])),
+                soft_risk_count,
+                normal_blockers,
+                normal_promotion_reasons,
+            )
 
         if (
             missing_liquidity
@@ -774,7 +843,7 @@ class ArbitrageScannerService:
                         "blocked_from_normal_due_to_missing_liquidity_data",
                     ]
                 )
-            )
+            ), soft_risk_count, normal_blockers, normal_promotion_reasons
 
         if (
             opportunity.risk_adjusted_edge_bps >= 6
@@ -785,9 +854,9 @@ class ArbitrageScannerService:
             drivers = list(dict.fromkeys(positive_drivers + gap_drivers))
             if not gap_drivers:
                 drivers.append("below_normal_thresholds")
-            return "small_probe", drivers
+            return "small_probe", drivers, soft_risk_count, normal_blockers, normal_promotion_reasons
 
-        return "paper", ["paper_due_to_execution_rules"]
+        return "paper", ["paper_due_to_execution_rules"], soft_risk_count, normal_blockers, normal_promotion_reasons
 
     @staticmethod
     def _adjust_position_pct_for_execution_mode(

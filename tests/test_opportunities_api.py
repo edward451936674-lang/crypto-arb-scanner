@@ -358,7 +358,72 @@ def test_execution_mode_normal_only_when_thresholds_met() -> None:
     assert item.is_primary_route is True
     assert item.conviction_score >= 0.50
     assert item.funding_confidence_score >= 0.55
+    assert item.normal_required_edge_bps == 10.0
+    assert item.edge_buffer_bps >= 0.0
+    assert item.normal_eligibility_score > 0.0
+    assert item.soft_risk_flag_count <= 2
+    assert item.normal_blockers == []
+    assert "edge_buffer_non_negative" in item.normal_promotion_reasons
+    assert "conviction_meets_normal" in item.normal_promotion_reasons
     assert item.is_executable_now is True
+
+
+def test_negative_edge_buffer_blocks_normal_and_stays_small_probe() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported", funding_period_hours=8),
+            _snapshot("okx", 100.16, funding_rate=0.0002, funding_rate_source="current", funding_period_hours=8),
+        ]
+    )
+
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.edge_buffer_bps < 0.0
+    assert item.execution_mode == "small_probe"
+    assert "negative_edge_buffer_for_normal" in item.normal_blockers
+    assert "below_normal_edge_threshold" in item.execution_mode_drivers
+
+
+def test_too_many_soft_risk_flags_block_normal_with_explicit_reasons() -> None:
+    scanner = ArbitrageScannerService()
+    degraded_long = _snapshot(
+        "binance",
+        100.0,
+        funding_rate=-0.001,
+        funding_rate_source="latest_reported",
+        open_interest_usd=None,
+        quote_volume_24h_usd=None,
+    ).model_copy(
+        update={
+            "data_quality_status": "degraded",
+            "data_quality_score": 0.8,
+            "data_quality_flags": ["cross_exchange_price_outlier"],
+        }
+    )
+    opportunities = scanner.build_opportunities(
+        [
+            degraded_long,
+            _snapshot(
+                "okx",
+                101.0,
+                funding_rate=0.001,
+                funding_rate_source="current",
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+        ]
+    )
+
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.execution_mode == "small_probe"
+    assert item.soft_risk_flag_count >= 3
+    assert "too_many_soft_risk_flags_for_normal" in item.normal_blockers
+    assert "soft_risk:missing_liquidity_data" in item.normal_blockers
+    assert "soft_risk:degraded_data_quality" in item.normal_blockers
+    assert "soft_risk:cross_exchange_price_quality_risk" in item.normal_blockers
+    assert "soft_risk_count_within_normal_limit" not in item.normal_promotion_reasons
 
 
 def test_execution_mode_size_up_requires_all_strict_conditions() -> None:
@@ -616,6 +681,9 @@ def test_degraded_quality_propagates_to_opportunity_risk_ranking_and_sizing() ->
     assert degraded_opportunity.data_quality_penalty_multiplier == 0.85
     assert degraded_opportunity.data_quality_adjusted_edge_bps == (
         degraded_opportunity.risk_adjusted_edge_bps * degraded_opportunity.data_quality_penalty_multiplier
+    )
+    assert degraded_opportunity.edge_buffer_bps == (
+        degraded_opportunity.data_quality_adjusted_edge_bps - degraded_opportunity.normal_required_edge_bps
     )
     assert "degraded_data_quality" in degraded_opportunity.risk_flags
     assert "cross_exchange_price_quality_risk" in degraded_opportunity.risk_flags
