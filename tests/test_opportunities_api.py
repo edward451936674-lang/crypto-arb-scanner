@@ -426,6 +426,29 @@ def test_too_many_soft_risk_flags_block_normal_with_explicit_reasons() -> None:
     assert "soft_risk_count_within_normal_limit" not in item.normal_promotion_reasons
 
 
+def test_exactly_two_soft_risks_not_explained_as_too_many() -> None:
+    scanner = ArbitrageScannerService()
+    degraded_long = _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported").model_copy(
+        update={
+            "data_quality_status": "degraded",
+            "data_quality_score": 0.8,
+            "data_quality_flags": ["timestamp_stale"],
+        }
+    )
+    opportunities = scanner.build_opportunities(
+        [
+            degraded_long,
+            _snapshot("okx", 100.2, funding_rate=0.0002, funding_rate_source="current"),
+        ]
+    )
+
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.soft_risk_flag_count == 2
+    assert "too_many_soft_risk_flags_for_normal" not in item.normal_blockers
+    assert "multiple_soft_risk_flags" not in item.execution_mode_drivers
+
+
 def test_execution_mode_size_up_requires_all_strict_conditions() -> None:
     scanner = ArbitrageScannerService()
     opportunities = scanner.build_opportunities(

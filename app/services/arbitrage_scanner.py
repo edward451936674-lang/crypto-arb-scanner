@@ -775,7 +775,7 @@ class ArbitrageScannerService:
             gap_drivers.append("below_normal_conviction")
         if opportunity.funding_confidence_score < 0.55:
             gap_drivers.append("below_normal_funding_confidence")
-        if soft_risk_count > 1:
+        if soft_risk_count > 2:
             gap_drivers.append("multiple_soft_risk_flags")
         if "mixed_funding_sources" in risk_flags:
             gap_drivers.append("mixed_funding_sources")
