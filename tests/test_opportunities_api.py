@@ -693,7 +693,41 @@ def test_negative_edge_buffer_stays_small_probe_with_explicit_normal_blockers(mo
     assert item["execution_mode"] == "small_probe"
     assert "below_normal_edge_threshold" in item["normal_blockers"]
     assert "below_normal_edge_threshold" in item["execution_mode_drivers"]
-    assert item["normal_promotion_reasons"]
+    assert "meets_normal_thresholds" not in item["normal_promotion_reasons"]
+
+
+def test_missing_liquidity_small_probe_exposes_liquidity_normal_blocker(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot(
+                    "binance",
+                    100.0,
+                    funding_rate=-0.0002,
+                    funding_rate_source="latest_reported",
+                    open_interest_usd=None,
+                    quote_volume_24h_usd=None,
+                ),
+                _snapshot(
+                    "okx",
+                    100.22,
+                    funding_rate=0.0002,
+                    funding_rate_source="current",
+                    open_interest_usd=None,
+                    quote_volume_24h_usd=None,
+                ),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    item = response["opportunities"][0]
+    assert item["execution_mode"] == "small_probe"
+    assert "missing_liquidity_data_blocks_normal" in item["normal_blockers"]
+    assert "meets_normal_thresholds" not in item["normal_promotion_reasons"]
 
 
 def test_exactly_two_soft_risks_not_labeled_too_many() -> None:

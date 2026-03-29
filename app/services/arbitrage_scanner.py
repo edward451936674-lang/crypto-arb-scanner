@@ -741,10 +741,15 @@ class ArbitrageScannerService:
             gap_drivers.append("below_normal_funding_confidence")
         if soft_risk_count > 2:
             gap_drivers.append("too_many_soft_risk_flags")
-
-        normal_promotion_reasons = list(dict.fromkeys(positive_drivers + ["meets_normal_thresholds"]))
-
-        normal_blockers = list(gap_drivers)
+        normal_blockers: list[str] = list(gap_drivers)
+        if not opportunity.is_primary_route:
+            normal_blockers.append("non_primary_route")
+        if opportunity.opportunity_grade != "tradable":
+            normal_blockers.append("non_tradable_opportunity_grade")
+        if missing_liquidity:
+            normal_blockers.append("missing_liquidity_data_blocks_normal")
+        normal_blockers = list(dict.fromkeys(normal_blockers))
+        normal_promotion_reasons: list[str] = []
         if baseline_suggested_position_pct <= 0:
             return "paper", ["paper_due_to_zero_suggested_size"], soft_risk_count, normal_blockers, normal_promotion_reasons
         if opportunity.risk_adjusted_edge_bps < 6:
@@ -789,7 +794,7 @@ class ArbitrageScannerService:
                 list(dict.fromkeys(positive_drivers + ["meets_normal_thresholds"])),
                 soft_risk_count,
                 normal_blockers,
-                normal_promotion_reasons,
+                ["meets_normal_thresholds"],
             )
 
         if (
