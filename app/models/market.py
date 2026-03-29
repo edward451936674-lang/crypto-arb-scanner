@@ -118,6 +118,9 @@ class Opportunity(BaseModel):
     normal_required_edge_bps: float = 10.0
     edge_buffer_bps: float = 0.0
     normal_eligibility_score: float = 0.0
+    soft_risk_flag_count: int = 0
+    normal_blockers: list[str] = Field(default_factory=list)
+    normal_promotion_reasons: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     opportunity_grade: str
     is_tradable: bool
