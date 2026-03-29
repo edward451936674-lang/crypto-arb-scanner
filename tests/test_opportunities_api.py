@@ -378,6 +378,10 @@ def test_execution_mode_size_up_requires_all_strict_conditions() -> None:
     assert item.size_up_eligible is True
     assert item.is_executable_now is True
     assert "strong_risk_adjusted_edge" in item.execution_mode_drivers
+    assert item.size_up_required_edge_bps > item.normal_required_edge_bps
+    assert item.size_up_edge_buffer_bps >= 0
+    assert item.size_up_blockers == []
+    assert "meets_size_up_thresholds" in item.size_up_promotion_reasons
 
 
 def test_is_executable_now_matches_execution_mode() -> None:
@@ -652,3 +656,129 @@ def test_degraded_quality_blocks_size_up_for_otherwise_size_up_candidate() -> No
     assert item.execution_mode in {"small_probe", "normal"}
     assert item.execution_mode != "size_up"
     assert item.size_up_eligible is False
+    assert "degraded_data_quality_blocks_size_up" in item.size_up_blockers
+    assert item.size_up_promotion_reasons == []
+
+
+def test_normal_mode_exposes_explainability_metadata(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported"),
+                _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    item = response["opportunities"][0]
+    assert item["execution_mode"] == "normal"
+    assert item["soft_risk_flag_count"] == 1
+    assert item["normal_blockers"] == []
+    assert "meets_normal_thresholds" in item["normal_promotion_reasons"]
+
+
+def test_negative_edge_buffer_stays_small_probe_with_explicit_normal_blockers(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=0.0, funding_rate_source="current"),
+                _snapshot("okx", 100.18, funding_rate=0.0, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    item = response["opportunities"][0]
+    assert item["execution_mode"] == "small_probe"
+    assert "below_normal_edge_threshold" in item["normal_blockers"]
+    assert "below_normal_edge_threshold" in item["execution_mode_drivers"]
+    assert "meets_normal_thresholds" not in item["normal_promotion_reasons"]
+    assert item["size_up_promotion_reasons"] == []
+
+
+def test_missing_liquidity_small_probe_exposes_liquidity_normal_blocker(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot(
+                    "binance",
+                    100.0,
+                    funding_rate=-0.0002,
+                    funding_rate_source="latest_reported",
+                    open_interest_usd=None,
+                    quote_volume_24h_usd=None,
+                ),
+                _snapshot(
+                    "okx",
+                    100.22,
+                    funding_rate=0.0002,
+                    funding_rate_source="current",
+                    open_interest_usd=None,
+                    quote_volume_24h_usd=None,
+                ),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    item = response["opportunities"][0]
+    assert item["execution_mode"] == "small_probe"
+    assert "missing_liquidity_data_blocks_normal" in item["normal_blockers"]
+    assert "meets_normal_thresholds" not in item["normal_promotion_reasons"]
+    assert "missing_liquidity_data_blocks_size_up" in item["size_up_blockers"]
+
+
+def test_normal_mode_is_blocked_from_size_up_with_explicit_size_up_blockers() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported"),
+            _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current"),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.execution_mode == "normal"
+    assert "insufficient_size_up_edge_buffer" in item.size_up_blockers
+    assert "meets_size_up_thresholds" not in item.execution_mode_drivers
+    assert item.size_up_promotion_reasons == []
+
+
+def test_exactly_two_soft_risks_not_labeled_too_many() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported", funding_period_hours=8),
+            _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current", funding_period_hours=4),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.soft_risk_flag_count == 2
+    assert "too_many_soft_risk_flags" not in item.normal_blockers
+
+
+def test_three_or_more_soft_risks_blocks_normal_with_too_many_flag() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.002, funding_rate_source="latest_reported", funding_period_hours=8),
+            _snapshot("okx", 100.32, funding_rate=0.002, funding_rate_source="current", funding_period_hours=4),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.soft_risk_flag_count >= 3
+    assert item.execution_mode == "small_probe"
+    assert "too_many_soft_risk_flags" in item.normal_blockers
+    assert "too_many_soft_risk_flags" in item.execution_mode_drivers
