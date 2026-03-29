@@ -754,6 +754,22 @@ def test_normal_mode_is_blocked_from_size_up_with_explicit_size_up_blockers() ->
     assert item.size_up_promotion_reasons == []
 
 
+def test_exactly_two_soft_risks_can_be_normal_but_not_size_up() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported", funding_period_hours=8),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current", funding_period_hours=4),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.soft_risk_flag_count == 2
+    assert item.execution_mode == "normal"
+    assert "too_many_soft_risk_flags_for_size_up" in item.size_up_blockers
+    assert item.size_up_promotion_reasons == []
+
+
 def test_exactly_two_soft_risks_not_labeled_too_many() -> None:
     scanner = ArbitrageScannerService()
     opportunities = scanner.build_opportunities(

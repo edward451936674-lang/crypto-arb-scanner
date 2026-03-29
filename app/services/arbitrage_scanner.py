@@ -777,7 +777,7 @@ class ArbitrageScannerService:
             size_up_blockers.append("non_primary_route_blocks_size_up")
         if opportunity.opportunity_grade != "tradable":
             size_up_blockers.append("non_tradable_grade_blocks_size_up")
-        if soft_risk_count > 2:
+        if soft_risk_count > 1:
             size_up_blockers.append("too_many_soft_risk_flags_for_size_up")
         size_up_blockers = list(dict.fromkeys(size_up_blockers))
         size_up_promotion_reasons: list[str] = []
@@ -841,7 +841,7 @@ class ArbitrageScannerService:
             and opportunity.size_up_edge_buffer_bps >= 0
             and conviction_score >= 0.75
             and opportunity.funding_confidence_score >= 0.80
-            and soft_risk_count <= 2
+            and soft_risk_count <= 1
             and not (risk_flags & size_up_blocking_flags)
         ):
             return (
