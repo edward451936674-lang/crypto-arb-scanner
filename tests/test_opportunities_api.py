@@ -758,3 +758,150 @@ def test_three_or_more_soft_risks_blocks_normal_with_too_many_flag() -> None:
     assert item.execution_mode == "small_probe"
     assert "too_many_soft_risk_flags" in item.normal_blockers
     assert "too_many_soft_risk_flags" in item.execution_mode_drivers
+
+
+def test_size_up_clean_case_includes_size_up_metadata_and_reasons() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+
+    assert len(opportunities) == 1
+    item = opportunities[0]
+    assert item.execution_mode == "size_up"
+    assert item.size_up_required_edge_bps == 18.0
+    assert item.size_up_edge_buffer_bps == (item.data_quality_adjusted_edge_bps - item.size_up_required_edge_bps)
+    assert item.size_up_blockers == []
+    assert "meets_size_up_thresholds" in item.size_up_promotion_reasons
+
+
+def test_normal_only_case_has_explicit_size_up_blockers() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot(
+                "binance",
+                100.0,
+                funding_rate=-0.0002,
+                funding_rate_source="latest_reported",
+            ),
+            _snapshot(
+                "okx",
+                100.22,
+                funding_rate=0.0002,
+                funding_rate_source="current",
+            ),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.execution_mode == "normal"
+    assert "insufficient_size_up_edge_buffer" in item.size_up_blockers
+    assert item.size_up_promotion_reasons == []
+
+
+def test_degraded_data_quality_explicitly_blocks_size_up() -> None:
+    scanner = ArbitrageScannerService()
+    degraded_long = _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported").model_copy(
+        update={"data_quality_status": "degraded", "data_quality_score": 0.8}
+    )
+    opportunities = scanner.build_opportunities(
+        [
+            degraded_long,
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.execution_mode != "size_up"
+    assert "degraded_data_quality_blocks_size_up" in item.size_up_blockers
+
+
+def test_missing_liquidity_explicitly_blocks_size_up() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot(
+                "binance",
+                100.0,
+                funding_rate=-0.0002,
+                funding_rate_source="latest_reported",
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+            _snapshot(
+                "okx",
+                100.22,
+                funding_rate=0.0002,
+                funding_rate_source="current",
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.execution_mode == "small_probe"
+    assert "missing_liquidity_data_blocks_size_up" in item.size_up_blockers
+
+
+def test_exactly_two_soft_risks_can_be_normal_but_not_size_up() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported", funding_period_hours=8),
+            _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current", funding_period_hours=4),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.soft_risk_flag_count == 2
+    assert item.execution_mode == "normal"
+    assert item.size_up_eligible is False
+    assert "too_many_soft_risk_flags_for_size_up" in item.size_up_blockers
+
+
+def test_size_up_promotion_reasons_only_present_for_size_up_mode() -> None:
+    scanner = ArbitrageScannerService()
+    size_up_item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0]
+    normal_item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported"),
+            _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current"),
+        ]
+    )[0]
+    small_probe_item = scanner.build_opportunities(
+        [
+            _snapshot(
+                "binance",
+                100.0,
+                funding_rate=-0.0002,
+                funding_rate_source="latest_reported",
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+            _snapshot(
+                "okx",
+                100.22,
+                funding_rate=0.0002,
+                funding_rate_source="current",
+                open_interest_usd=None,
+                quote_volume_24h_usd=None,
+            ),
+        ]
+    )[0]
+
+    assert size_up_item.execution_mode == "size_up"
+    assert size_up_item.size_up_promotion_reasons
+    assert normal_item.execution_mode == "normal"
+    assert normal_item.size_up_promotion_reasons == []
+    assert small_probe_item.execution_mode == "small_probe"
+    assert small_probe_item.size_up_promotion_reasons == []
