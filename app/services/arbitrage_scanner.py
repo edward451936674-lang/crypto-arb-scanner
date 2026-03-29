@@ -198,6 +198,12 @@ class ArbitrageScannerService:
         )
         risk_adjusted_edge_bps = net_edge_bps * funding_confidence_score
         data_quality_adjusted_edge_bps = risk_adjusted_edge_bps * data_quality_penalty_multiplier
+        normal_required_edge_bps = self._normal_required_edge_bps()
+        edge_buffer_bps = data_quality_adjusted_edge_bps - normal_required_edge_bps
+        normal_eligibility_score = self._normal_eligibility_score(
+            edge_buffer_bps,
+            funding_confidence_score,
+        )
         is_tradable = risk_adjusted_edge_bps >= 8
         opportunity_grade = self._opportunity_grade(risk_adjusted_edge_bps, is_tradable)
         if opportunity_grade == "discard":
@@ -238,6 +244,9 @@ class ArbitrageScannerService:
             data_quality_drivers=data_quality_drivers,
             data_quality_penalty_multiplier=data_quality_penalty_multiplier,
             data_quality_adjusted_edge_bps=data_quality_adjusted_edge_bps,
+            normal_required_edge_bps=normal_required_edge_bps,
+            edge_buffer_bps=edge_buffer_bps,
+            normal_eligibility_score=normal_eligibility_score,
             risk_flags=risk_flags,
             opportunity_grade=opportunity_grade,
             is_tradable=is_tradable,
@@ -679,6 +688,15 @@ class ArbitrageScannerService:
         return 0.03
 
     @staticmethod
+    def _normal_required_edge_bps() -> float:
+        return 10.0
+
+    @staticmethod
+    def _normal_eligibility_score(edge_buffer_bps: float, funding_confidence_score: float) -> float:
+        edge_component = max(0.0, min(1.0, (edge_buffer_bps + 6.0) / 12.0))
+        return max(0.0, min(1.0, (edge_component * 0.6) + (funding_confidence_score * 0.4)))
+
+    @staticmethod
     def _determine_execution_mode(
         opportunity: Opportunity,
         conviction_score: float,
@@ -706,7 +724,7 @@ class ArbitrageScannerService:
             positive_drivers.append("complete_liquidity_data")
 
         gap_drivers: list[str] = []
-        if opportunity.risk_adjusted_edge_bps < 10:
+        if opportunity.edge_buffer_bps < 0:
             gap_drivers.append("below_normal_edge_threshold")
         if conviction_score < 0.50:
             gap_drivers.append("below_normal_conviction")
@@ -752,7 +770,7 @@ class ArbitrageScannerService:
         if (
             opportunity.is_primary_route
             and opportunity.opportunity_grade == "tradable"
-            and opportunity.risk_adjusted_edge_bps >= 10
+            and opportunity.edge_buffer_bps >= 0
             and conviction_score >= 0.50
             and opportunity.funding_confidence_score >= 0.55
             and not missing_liquidity

@@ -115,6 +115,9 @@ class Opportunity(BaseModel):
     data_quality_drivers: list[str] = Field(default_factory=list)
     data_quality_penalty_multiplier: float = 1.0
     data_quality_adjusted_edge_bps: float = 0.0
+    normal_required_edge_bps: float = 10.0
+    edge_buffer_bps: float = 0.0
+    normal_eligibility_score: float = 0.0
     risk_flags: list[str] = Field(default_factory=list)
     opportunity_grade: str
     is_tradable: bool
