@@ -40,15 +40,25 @@ class ExecutionSizingPolicyEvaluator:
         if account_inputs.live_required_liquidation_buffer_pct < 28.0:
             blockers.append("live_liquidation_buffer_requirement_not_strict_enough")
 
-        extended_ready = len(blockers) == 0
-        base_cap = 0.08 if extended_ready else 0.05
-
         capacities = {
             "total": max(0.0, account_inputs.live_remaining_total_cap_pct),
             "symbol": max(0.0, account_inputs.live_remaining_symbol_cap_pct),
             "long_exchange": max(0.0, account_inputs.live_remaining_long_exchange_cap_pct),
             "short_exchange": max(0.0, account_inputs.live_remaining_short_exchange_cap_pct),
         }
+
+        if len(blockers) == 0:
+            if capacities["total"] < 0.08:
+                blockers.append("insufficient_live_total_capacity_for_extended_size_up")
+            if capacities["symbol"] < 0.08:
+                blockers.append("insufficient_live_symbol_capacity_for_extended_size_up")
+            if capacities["long_exchange"] < 0.08:
+                blockers.append("insufficient_live_long_exchange_capacity_for_extended_size_up")
+            if capacities["short_exchange"] < 0.08:
+                blockers.append("insufficient_live_short_exchange_capacity_for_extended_size_up")
+
+        extended_ready = len(blockers) == 0
+        base_cap = 0.08 if extended_ready else 0.05
         execution_max_single_cap_pct = min(
             base_cap,
             capacities["total"],
@@ -56,16 +66,6 @@ class ExecutionSizingPolicyEvaluator:
             capacities["long_exchange"],
             capacities["short_exchange"],
         )
-
-        if extended_ready:
-            if capacities["total"] < base_cap:
-                blockers.append("insufficient_live_total_capacity_for_extended_size_up")
-            if capacities["symbol"] < base_cap:
-                blockers.append("insufficient_live_symbol_capacity_for_extended_size_up")
-            if capacities["long_exchange"] < base_cap:
-                blockers.append("insufficient_live_long_exchange_capacity_for_extended_size_up")
-            if capacities["short_exchange"] < base_cap:
-                blockers.append("insufficient_live_short_exchange_capacity_for_extended_size_up")
 
         cap_reasons: list[str] = []
         if execution_max_single_cap_pct == base_cap:

@@ -1023,8 +1023,8 @@ def test_execution_policy_insufficient_capacity_caps_execution_single_cap() -> N
             live_remaining_short_exchange_cap_pct=0.1,
         ),
     )
-    assert decision.extended_size_up_execution_ready is True
-    assert decision.execution_max_single_cap_pct == 0.07
+    assert decision.extended_size_up_execution_ready is False
+    assert decision.execution_max_single_cap_pct == 0.05
     assert "insufficient_live_total_capacity_for_extended_size_up" in decision.extended_size_up_execution_blockers
 
 
