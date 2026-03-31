@@ -331,6 +331,7 @@ class ArbitrageScannerService:
                         "size_up_blockers": size_up_blockers,
                         "size_up_promotion_reasons": size_up_promotion_reasons,
                         "suggested_position_pct": suggested_position_pct,
+                        "extended_size_up_eligible": False,
                     }
                 )
         return candidates
@@ -377,29 +378,50 @@ class ArbitrageScannerService:
                 size = 0.0
                 reject_reasons.append("paper_mode")
             else:
-                size, was_clamped = self._clamp_size(size, MAX_SINGLE_OPPORTUNITY_PCT)
+                mode_base_cap_pct = max(0.0, opportunity.max_position_pct)
+                remaining_total = max(0.0, MAX_TOTAL_POSITION_PCT - total_used)
+                current_symbol_used = symbol_used.get(opportunity.symbol, 0.0)
+                remaining_symbol = max(0.0, MAX_SYMBOL_POSITION_PCT - current_symbol_used)
+                long_exchange_key = opportunity.long_exchange.lower()
+                short_exchange_key = opportunity.short_exchange.lower()
+                remaining_long = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(long_exchange_key, 0.0))
+                remaining_short = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(short_exchange_key, 0.0))
+                absolute_single_opportunity_cap_pct = MAX_SINGLE_OPPORTUNITY_PCT
+
+                active_cap_candidates = [
+                    mode_base_cap_pct,
+                    remaining_total,
+                    remaining_symbol,
+                    remaining_long,
+                    remaining_short,
+                    absolute_single_opportunity_cap_pct,
+                ]
+                final_single_cap_pct = max(0.0, min(active_cap_candidates))
+
+                # Reserved placeholders for a future account-risk-input phase.
+                effective_leverage = None
+                leverage_cap_pct = None
+                long_liquidation_distance_pct = None
+                short_liquidation_distance_pct = None
+                worst_leg_liquidation_distance_pct = None
+                liquidation_cap_pct = None
+
+                size, was_clamped = self._clamp_size(size, absolute_single_opportunity_cap_pct)
                 if was_clamped:
                     clamp_reasons.append("capped_by_single_opportunity_limit")
 
-                remaining_total = max(0.0, MAX_TOTAL_POSITION_PCT - total_used)
                 if remaining_total <= 0:
                     reject_reasons.append("no_total_capacity_remaining")
                 size, was_clamped = self._clamp_size(size, remaining_total)
                 if was_clamped:
                     clamp_reasons.append("capped_by_total_portfolio_limit")
 
-                current_symbol_used = symbol_used.get(opportunity.symbol, 0.0)
-                remaining_symbol = max(0.0, MAX_SYMBOL_POSITION_PCT - current_symbol_used)
                 if remaining_symbol <= 0:
                     reject_reasons.append("no_symbol_capacity_remaining")
                 size, was_clamped = self._clamp_size(size, remaining_symbol)
                 if was_clamped:
                     clamp_reasons.append("capped_by_symbol_limit")
 
-                long_exchange_key = opportunity.long_exchange.lower()
-                short_exchange_key = opportunity.short_exchange.lower()
-                remaining_long = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(long_exchange_key, 0.0))
-                remaining_short = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(short_exchange_key, 0.0))
                 if remaining_long <= 0:
                     reject_reasons.append("no_long_exchange_capacity_remaining")
                 if remaining_short <= 0:
@@ -434,26 +456,58 @@ class ArbitrageScannerService:
             allocation_priority_label = (
                 f"{opportunity.execution_mode}_{'primary' if opportunity.is_primary_route else 'secondary'}"
             )
+            update_payload = {
+                "mode_base_cap_pct": 0.0,
+                "remaining_total_cap_pct": 0.0,
+                "remaining_symbol_cap_pct": 0.0,
+                "remaining_long_exchange_cap_pct": 0.0,
+                "remaining_short_exchange_cap_pct": 0.0,
+                "absolute_single_opportunity_cap_pct": MAX_SINGLE_OPPORTUNITY_PCT,
+                "effective_leverage": None,
+                "leverage_cap_pct": None,
+                "long_liquidation_distance_pct": None,
+                "short_liquidation_distance_pct": None,
+                "worst_leg_liquidation_distance_pct": None,
+                "liquidation_cap_pct": None,
+                "final_single_cap_pct": 0.0,
+                "final_position_pct": final_position_pct,
+                "is_executable_now": is_executable_now,
+                "portfolio_clamp_reasons": list(dict.fromkeys(clamp_reasons)),
+                "portfolio_reject_reasons": list(dict.fromkeys(reject_reasons)),
+                "portfolio_total_used_after": total_used,
+                "portfolio_symbol_used_after": symbol_used.get(opportunity.symbol, 0.0),
+                "portfolio_long_exchange_used_after": exchange_used.get(
+                    opportunity.long_exchange.lower(),
+                    0.0,
+                ),
+                "portfolio_short_exchange_used_after": exchange_used.get(
+                    opportunity.short_exchange.lower(),
+                    0.0,
+                ),
+                "portfolio_rank": rank,
+                "allocation_priority_label": allocation_priority_label,
+            }
+            if opportunity.execution_mode != "paper":
+                update_payload.update(
+                    {
+                        "mode_base_cap_pct": mode_base_cap_pct,
+                        "remaining_total_cap_pct": remaining_total,
+                        "remaining_symbol_cap_pct": remaining_symbol,
+                        "remaining_long_exchange_cap_pct": remaining_long,
+                        "remaining_short_exchange_cap_pct": remaining_short,
+                        "absolute_single_opportunity_cap_pct": absolute_single_opportunity_cap_pct,
+                        "effective_leverage": effective_leverage,
+                        "leverage_cap_pct": leverage_cap_pct,
+                        "long_liquidation_distance_pct": long_liquidation_distance_pct,
+                        "short_liquidation_distance_pct": short_liquidation_distance_pct,
+                        "worst_leg_liquidation_distance_pct": worst_leg_liquidation_distance_pct,
+                        "liquidation_cap_pct": liquidation_cap_pct,
+                        "final_single_cap_pct": final_single_cap_pct,
+                    }
+                )
             allocated.append(
                 opportunity.model_copy(
-                    update={
-                        "final_position_pct": final_position_pct,
-                        "is_executable_now": is_executable_now,
-                        "portfolio_clamp_reasons": list(dict.fromkeys(clamp_reasons)),
-                        "portfolio_reject_reasons": list(dict.fromkeys(reject_reasons)),
-                        "portfolio_total_used_after": total_used,
-                        "portfolio_symbol_used_after": symbol_used.get(opportunity.symbol, 0.0),
-                        "portfolio_long_exchange_used_after": exchange_used.get(
-                            opportunity.long_exchange.lower(),
-                            0.0,
-                        ),
-                        "portfolio_short_exchange_used_after": exchange_used.get(
-                            opportunity.short_exchange.lower(),
-                            0.0,
-                        ),
-                        "portfolio_rank": rank,
-                        "allocation_priority_label": allocation_priority_label,
-                    }
+                    update=update_payload
                 )
             )
         return allocated
