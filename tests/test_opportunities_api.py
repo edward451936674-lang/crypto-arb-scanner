@@ -422,7 +422,6 @@ def test_portfolio_symbol_cap_is_enforced() -> None:
     )
     symbol_total = sum(item.final_position_pct for item in opportunities if item.symbol == "BTC")
     assert symbol_total <= 0.08 + 1e-12
-    assert all(item.final_single_cap_pct > 0.0 for item in opportunities)
 
 
 def test_portfolio_exchange_cap_is_enforced() -> None:
@@ -930,64 +929,78 @@ def test_standard_size_up_mode_base_cap_is_five_percent() -> None:
     assert item.final_single_cap_pct <= 0.05
 
 
-def test_extended_size_up_can_reach_eight_percent_when_fully_eligible() -> None:
+def test_framework_first_size_up_does_not_enable_extended_size_up() -> None:
     scanner = ArbitrageScannerService()
-    long_leg = _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported").model_copy(
-        update={"raw": {"effective_leverage": 1.8, "liquidation_distance_pct": 35.0}}
-    )
-    short_leg = _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current").model_copy(
-        update={"raw": {"effective_leverage": 1.7, "liquidation_distance_pct": 34.0}}
-    )
-    item = scanner.build_opportunities([long_leg, short_leg])[0]
+    item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0]
 
     assert item.execution_mode == "size_up"
-    assert item.extended_size_up_eligible is True
-    assert item.mode_base_cap_pct == 0.08
-    assert item.final_single_cap_pct > 0.05
-    assert item.final_single_cap_pct <= 0.08
+    assert item.extended_size_up_eligible is False
+    assert item.mode_base_cap_pct == 0.05
+    assert item.final_single_cap_pct <= 0.05
+    assert item.effective_leverage is None
+    assert item.worst_leg_liquidation_distance_pct is None
 
 
-def test_high_leverage_reduces_final_single_cap_pct() -> None:
+def test_final_single_cap_equals_min_of_enabled_cap_candidates() -> None:
     scanner = ArbitrageScannerService()
-    long_leg = _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported").model_copy(
-        update={"raw": {"effective_leverage": 6.0, "liquidation_distance_pct": 30.0}}
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("hyperliquid", 102.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
     )
-    short_leg = _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current").model_copy(
-        update={"raw": {"effective_leverage": 6.0, "liquidation_distance_pct": 30.0}}
+    item = opportunities[0]
+    previous_symbol_used = 0.0
+    if item.portfolio_rank and item.portfolio_rank > 1:
+        previous_same_symbol = [opp for opp in opportunities if opp.portfolio_rank < item.portfolio_rank and opp.symbol == item.symbol]
+        previous_symbol_used = sum(opp.final_position_pct for opp in previous_same_symbol)
+
+    expected_cap = min(
+        item.mode_base_cap_pct,
+        0.20 - (item.portfolio_total_used_after - item.final_position_pct),
+        0.08 - previous_symbol_used,
+        0.10 - (item.portfolio_long_exchange_used_after - item.final_position_pct),
+        0.10 - (item.portfolio_short_exchange_used_after - item.final_position_pct),
+        0.05,
     )
-    item = scanner.build_opportunities([long_leg, short_leg])[0]
-
-    assert item.leverage_cap_pct == (item.gross_notional_cap_pct / 6.0)
-    assert item.final_single_cap_pct <= item.leverage_cap_pct
-    assert "leverage_cap_pct" in item.single_opportunity_cap_reasons
+    assert item.final_single_cap_pct == expected_cap
 
 
-def test_insufficient_liquidation_distance_reduces_final_single_cap_pct() -> None:
+def test_total_symbol_and_exchange_caps_still_bind() -> None:
     scanner = ArbitrageScannerService()
-    long_leg = _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported").model_copy(
-        update={"raw": {"effective_leverage": 2.0, "liquidation_distance_pct": 8.0}}
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("hyperliquid", 102.0, funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("binance", 200.0, base_symbol="ETH", funding_rate=-0.001, funding_rate_source="current"),
+            _snapshot("okx", 202.0, base_symbol="ETH", funding_rate=0.001, funding_rate_source="current"),
+            _snapshot("hyperliquid", 204.0, base_symbol="ETH", funding_rate=0.001, funding_rate_source="current"),
+        ]
     )
-    short_leg = _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current").model_copy(
-        update={"raw": {"effective_leverage": 2.0, "liquidation_distance_pct": 9.0}}
-    )
-    item = scanner.build_opportunities([long_leg, short_leg])[0]
 
-    assert item.worst_leg_liquidation_distance_pct == 8.0
-    assert item.liquidation_cap_pct < item.mode_base_cap_pct
-    assert item.final_single_cap_pct <= item.liquidation_cap_pct
-    assert "liquidation_cap_pct" in item.single_opportunity_cap_reasons
+    assert all(item.portfolio_total_used_after <= 0.20 + 1e-12 for item in opportunities)
+    assert all(item.portfolio_symbol_used_after <= 0.08 + 1e-12 for item in opportunities if item.symbol == "BTC")
+    assert all(item.portfolio_long_exchange_used_after <= 0.10 + 1e-12 for item in opportunities)
+    assert all(item.portfolio_short_exchange_used_after <= 0.10 + 1e-12 for item in opportunities)
 
 
 def test_single_opportunity_cap_reasons_are_populated_consistently() -> None:
     scanner = ArbitrageScannerService()
-    long_leg = _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported").model_copy(
-        update={"raw": {"effective_leverage": 10.0, "liquidation_distance_pct": 12.0}}
-    )
-    short_leg = _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current").model_copy(
-        update={"raw": {"effective_leverage": 10.0, "liquidation_distance_pct": 12.0}}
-    )
-    item = scanner.build_opportunities([long_leg, short_leg])[0]
+    item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported"),
+            _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current"),
+        ]
+    )[0]
 
     assert item.final_single_cap_pct > 0
     assert item.single_opportunity_cap_reasons
+    assert "mode_base_cap_pct" in item.single_opportunity_cap_reasons
     assert all(isinstance(reason, str) and reason for reason in item.single_opportunity_cap_reasons)

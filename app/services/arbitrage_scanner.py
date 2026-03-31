@@ -40,7 +40,7 @@ BPS_MULTIPLIER = 10_000
 MAX_TOTAL_POSITION_PCT = 0.20
 MAX_SYMBOL_POSITION_PCT = 0.08
 MAX_EXCHANGE_POSITION_PCT = 0.10
-MAX_SINGLE_OPPORTUNITY_PCT = 0.08
+MAX_SINGLE_OPPORTUNITY_PCT = 0.05
 MODE_BASE_CAP_PCT = {
     "paper": 0.0,
     "small_probe": 0.005,
@@ -53,8 +53,6 @@ MODE_GROSS_NOTIONAL_CAP_PCT = {
     "normal": 0.05,
     "size_up": 0.12,
 }
-EXTENDED_SIZE_UP_BASE_CAP_PCT = 0.08
-SAFE_FALLBACK_LEVERAGE = 3.0
 EXECUTION_MODE_PRIORITY = {
     "paper": 0,
     "small_probe": 1,
@@ -320,35 +318,15 @@ class ArbitrageScannerService:
                     conviction_score,
                     baseline_suggested_position_pct,
                 )
-                (
-                    effective_leverage,
-                    long_liquidation_distance_pct,
-                    short_liquidation_distance_pct,
-                    worst_leg_liquidation_distance_pct,
-                ) = self._route_risk_metrics(candidate.long_snapshot, candidate.short_snapshot)
-                missing_size_up_blockers = {
-                    "missing_liquidity_data_blocks_size_up",
-                    "degraded_data_quality_blocks_size_up",
-                }
-                extended_size_up_eligible = (
-                    execution_mode == "size_up"
-                    and soft_risk_flag_count <= 1
-                    and opportunity.data_quality_status == "healthy"
-                    and effective_leverage is not None
-                    and effective_leverage <= 2.0
-                    and (worst_leg_liquidation_distance_pct or 0.0) >= 28.0
-                    and not any(blocker in size_up_blockers for blocker in missing_size_up_blockers)
-                    and opportunity.size_up_edge_buffer_bps >= 5.0
-                )
-                mode_base_cap_pct = self._mode_base_cap_pct(execution_mode, extended_size_up_eligible)
+                extended_size_up_eligible = False
+                mode_base_cap_pct = self._mode_base_cap_pct(execution_mode)
                 gross_notional_cap_pct = self._mode_gross_notional_cap_pct(execution_mode)
-                leverage_cap_pct = self._leverage_cap_pct(gross_notional_cap_pct, effective_leverage)
-                liquidation_cap_pct = self._liquidation_cap_pct(
-                    execution_mode,
-                    worst_leg_liquidation_distance_pct,
-                    extended_size_up_eligible,
-                    mode_base_cap_pct,
-                )
+                effective_leverage = None
+                leverage_cap_pct = 0.0
+                long_liquidation_distance_pct = None
+                short_liquidation_distance_pct = None
+                worst_leg_liquidation_distance_pct = None
+                liquidation_cap_pct = 0.0
                 size_up_eligible = execution_mode == "size_up"
                 suggested_position_pct = self._apply_execution_mode_to_suggested_position_pct(
                     baseline_suggested_position_pct,
@@ -431,7 +409,7 @@ class ArbitrageScannerService:
                 opportunity = opportunity.model_copy(
                     update={
                         "final_single_cap_pct": 0.0,
-                        "single_opportunity_cap_reasons": ["paper_mode_cap_zero"],
+                        "single_opportunity_cap_reasons": ["paper_mode_cap_zero", "mode_base_cap_pct"],
                     }
                 )
             else:
@@ -452,8 +430,6 @@ class ArbitrageScannerService:
                     reject_reasons.append("no_short_exchange_capacity_remaining")
                 cap_candidates = {
                     "mode_base_cap_pct": opportunity.mode_base_cap_pct,
-                    "leverage_cap_pct": opportunity.leverage_cap_pct,
-                    "liquidation_cap_pct": opportunity.liquidation_cap_pct,
                     "remaining_total_cap_pct": remaining_total,
                     "remaining_symbol_cap_pct": remaining_symbol,
                     "remaining_long_exchange_cap_pct": remaining_long,
@@ -468,15 +444,8 @@ class ArbitrageScannerService:
                     clamp_reasons.append("capped_by_final_single_opportunity_cap")
                 for reason in cap_reasons:
                     clamp_reasons.append(f"capped_by_{reason}")
-                if opportunity.extended_size_up_eligible:
-                    cap_reasons.append("extended_size_up_enabled")
-                else:
-                    if opportunity.execution_mode == "size_up":
-                        cap_reasons.append("extended_size_up_not_eligible")
-                    if opportunity.effective_leverage is None:
-                        cap_reasons.append("missing_leverage_data_safe_fallback")
-                    if opportunity.worst_leg_liquidation_distance_pct is None:
-                        cap_reasons.append("missing_liquidation_distance_safe_fallback")
+                if opportunity.execution_mode == "size_up":
+                    cap_reasons.append("extended_size_up_disabled_framework_first")
                 opportunity = opportunity.model_copy(
                     update={
                         "final_single_cap_pct": final_single_cap_pct,
@@ -537,87 +506,12 @@ class ArbitrageScannerService:
         return capped, capped < size
 
     @staticmethod
-    def _mode_base_cap_pct(execution_mode: str, extended_size_up_eligible: bool) -> float:
-        if execution_mode == "size_up" and extended_size_up_eligible:
-            return EXTENDED_SIZE_UP_BASE_CAP_PCT
+    def _mode_base_cap_pct(execution_mode: str) -> float:
         return MODE_BASE_CAP_PCT.get(execution_mode, 0.0)
 
     @staticmethod
     def _mode_gross_notional_cap_pct(execution_mode: str) -> float:
         return MODE_GROSS_NOTIONAL_CAP_PCT.get(execution_mode, 0.0)
-
-    @staticmethod
-    def _leverage_cap_pct(gross_notional_cap_pct: float, effective_leverage: float | None) -> float:
-        leverage = effective_leverage if effective_leverage and effective_leverage > 0 else SAFE_FALLBACK_LEVERAGE
-        return gross_notional_cap_pct / leverage
-
-    @staticmethod
-    def _liquidation_min_distance_pct(execution_mode: str, extended_size_up_eligible: bool) -> float:
-        if execution_mode == "small_probe":
-            return 10.0
-        if execution_mode == "normal":
-            return 15.0
-        if execution_mode == "size_up":
-            return 28.0 if extended_size_up_eligible else 22.0
-        return 100.0
-
-    def _liquidation_cap_pct(
-        self,
-        execution_mode: str,
-        worst_leg_liquidation_distance_pct: float | None,
-        extended_size_up_eligible: bool,
-        mode_base_cap_pct: float,
-    ) -> float:
-        if execution_mode == "paper":
-            return 0.0
-        required_distance_pct = self._liquidation_min_distance_pct(execution_mode, extended_size_up_eligible)
-        if worst_leg_liquidation_distance_pct is None:
-            return mode_base_cap_pct * 0.5
-        if worst_leg_liquidation_distance_pct >= required_distance_pct:
-            return mode_base_cap_pct
-        ratio = max(0.0, worst_leg_liquidation_distance_pct / required_distance_pct)
-        return mode_base_cap_pct * ratio
-
-    @staticmethod
-    def _route_risk_metrics(
-        long_snapshot: MarketSnapshot,
-        short_snapshot: MarketSnapshot,
-    ) -> tuple[float | None, float | None, float | None, float | None]:
-        long_leverage = ArbitrageScannerService._effective_leverage_from_snapshot(long_snapshot)
-        short_leverage = ArbitrageScannerService._effective_leverage_from_snapshot(short_snapshot)
-        available_leverages = [value for value in (long_leverage, short_leverage) if value is not None]
-        effective_leverage = max(available_leverages) if available_leverages else None
-        long_distance = ArbitrageScannerService._liquidation_distance_pct(long_snapshot, side="long")
-        short_distance = ArbitrageScannerService._liquidation_distance_pct(short_snapshot, side="short")
-        available_distances = [value for value in (long_distance, short_distance) if value is not None]
-        worst_distance = min(available_distances) if available_distances else None
-        return effective_leverage, long_distance, short_distance, worst_distance
-
-    @staticmethod
-    def _effective_leverage_from_snapshot(snapshot: MarketSnapshot) -> float | None:
-        raw = snapshot.raw or {}
-        for key in ("effective_leverage", "leverage", "position_leverage"):
-            value = raw.get(key)
-            if isinstance(value, (int, float)) and value > 0:
-                return float(value)
-        return None
-
-    @staticmethod
-    def _liquidation_distance_pct(snapshot: MarketSnapshot, side: str) -> float | None:
-        raw = snapshot.raw or {}
-        direct = raw.get("liquidation_distance_pct")
-        if isinstance(direct, (int, float)) and direct >= 0:
-            return float(direct)
-        liquidation_price = raw.get("liquidation_price")
-        if not isinstance(liquidation_price, (int, float)):
-            return None
-        if snapshot.mark_price <= 0:
-            return None
-        if side == "long":
-            distance = ((snapshot.mark_price - float(liquidation_price)) / snapshot.mark_price) * 100
-        else:
-            distance = ((float(liquidation_price) - snapshot.mark_price) / snapshot.mark_price) * 100
-        return max(0.0, distance)
 
     @staticmethod
     def _blocking_risk_count(risk_flags: list[str]) -> int:
