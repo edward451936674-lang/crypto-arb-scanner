@@ -3,7 +3,7 @@ import time
 
 from app.main import get_opportunities
 from app.models.market import MarketDataResponse, MarketSnapshot
-from app.services.arbitrage_scanner import ArbitrageScannerService
+from app.services.arbitrage_scanner import ArbitrageScannerService, EXECUTION_RISK_CONFIGS, ExecutionRiskConfig
 from app.services.market_data import MarketDataService
 
 
@@ -778,6 +778,11 @@ def test_size_up_clean_case_includes_size_up_metadata_and_reasons() -> None:
     assert item.size_up_edge_buffer_bps == (item.data_quality_adjusted_edge_bps - item.size_up_required_edge_bps)
     assert item.size_up_blockers == []
     assert "meets_size_up_thresholds" in item.size_up_promotion_reasons
+    assert item.configured_target_leverage == 2.0
+    assert item.configured_max_allowed_leverage == 2.5
+    assert item.configured_min_required_liquidation_buffer_pct == 22.0
+    assert item.extended_size_up_risk_eligible is False
+    assert "configured_liquidation_buffer_requirement_not_strict_enough" in item.extended_size_up_risk_blockers
 
 
 def test_normal_only_case_has_explicit_size_up_blockers() -> None:
@@ -802,6 +807,7 @@ def test_normal_only_case_has_explicit_size_up_blockers() -> None:
     item = opportunities[0]
     assert item.execution_mode == "normal"
     assert "insufficient_size_up_edge_buffer" in item.size_up_blockers
+    assert "size_up_not_achieved_blocks_extended_size_up" in item.extended_size_up_risk_blockers
     assert item.size_up_promotion_reasons == []
 
 
@@ -848,6 +854,42 @@ def test_missing_liquidity_explicitly_blocks_size_up() -> None:
     item = opportunities[0]
     assert item.execution_mode == "small_probe"
     assert "missing_liquidity_data_blocks_size_up" in item.size_up_blockers
+    assert item.extended_size_up_risk_eligible is False
+    assert "missing_liquidity_blocks_extended_size_up" in item.extended_size_up_risk_blockers
+
+
+def test_clean_size_up_can_be_extended_risk_eligible_when_policy_is_strict() -> None:
+    scanner = ArbitrageScannerService()
+    original_size_up_config = EXECUTION_RISK_CONFIGS["size_up"]
+    EXECUTION_RISK_CONFIGS["size_up"] = ExecutionRiskConfig(1.5, 2.0, 28.0)
+    try:
+        opportunities = scanner.build_opportunities(
+            [
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ]
+        )
+    finally:
+        EXECUTION_RISK_CONFIGS["size_up"] = original_size_up_config
+
+    item = opportunities[0]
+    assert item.execution_mode == "size_up"
+    assert item.extended_size_up_risk_eligible is True
+    assert item.extended_size_up_risk_blockers == []
+
+
+def test_extended_risk_scaffolding_does_not_change_final_single_cap_pct_behavior() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.absolute_single_opportunity_cap_pct == 0.05
+    assert item.final_single_cap_pct <= 0.05 + 1e-12
 
 
 def test_exactly_two_soft_risks_can_be_normal_but_not_size_up() -> None:

@@ -145,6 +145,11 @@ class Opportunity(BaseModel):
     liquidation_cap_pct: float | None = None
     final_single_cap_pct: float = 0.0
     extended_size_up_eligible: bool = False
+    configured_target_leverage: float | None = None
+    configured_max_allowed_leverage: float | None = None
+    configured_min_required_liquidation_buffer_pct: float | None = None
+    extended_size_up_risk_eligible: bool = False
+    extended_size_up_risk_blockers: list[str] = Field(default_factory=list)
     final_position_pct: float = 0.0
     is_executable_now: bool = False
     max_position_pct: float

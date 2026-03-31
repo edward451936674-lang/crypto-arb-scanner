@@ -99,6 +99,21 @@ class OpportunityCandidate:
     short_snapshot: MarketSnapshot
 
 
+@dataclass(frozen=True)
+class ExecutionRiskConfig:
+    target_leverage: float
+    max_allowed_leverage: float
+    min_required_liquidation_buffer_pct: float
+
+
+EXECUTION_RISK_CONFIGS = {
+    "small_probe": ExecutionRiskConfig(1.5, 2.0, 10.0),
+    "normal": ExecutionRiskConfig(2.0, 3.0, 15.0),
+    "size_up": ExecutionRiskConfig(2.0, 2.5, 22.0),
+    "extended_size_up": ExecutionRiskConfig(1.5, 2.0, 28.0),
+}
+
+
 class ArbitrageScannerService:
     """Build deterministic, pairwise arbitrage opportunities from market snapshots."""
 
@@ -307,6 +322,17 @@ class ArbitrageScannerService:
                     baseline_suggested_position_pct,
                 )
                 size_up_eligible = execution_mode == "size_up"
+                execution_risk_config = self._execution_risk_config(execution_mode)
+                (
+                    extended_size_up_risk_eligible,
+                    extended_size_up_risk_blockers,
+                ) = self._extended_size_up_risk_assessment(
+                    opportunity,
+                    execution_mode,
+                    soft_risk_flag_count,
+                    size_up_blockers,
+                    execution_risk_config,
+                )
                 suggested_position_pct = self._apply_execution_mode_to_suggested_position_pct(
                     baseline_suggested_position_pct,
                     execution_mode,
@@ -332,6 +358,13 @@ class ArbitrageScannerService:
                         "size_up_promotion_reasons": size_up_promotion_reasons,
                         "suggested_position_pct": suggested_position_pct,
                         "extended_size_up_eligible": False,
+                        "configured_target_leverage": execution_risk_config.target_leverage,
+                        "configured_max_allowed_leverage": execution_risk_config.max_allowed_leverage,
+                        "configured_min_required_liquidation_buffer_pct": (
+                            execution_risk_config.min_required_liquidation_buffer_pct
+                        ),
+                        "extended_size_up_risk_eligible": extended_size_up_risk_eligible,
+                        "extended_size_up_risk_blockers": extended_size_up_risk_blockers,
                     }
                 )
         return candidates
@@ -526,6 +559,48 @@ class ArbitrageScannerService:
         if execution_mode == "size_up":
             return 0.05
         return 0.0
+
+    @staticmethod
+    def _execution_risk_config(execution_mode: str) -> ExecutionRiskConfig:
+        return EXECUTION_RISK_CONFIGS.get(execution_mode, EXECUTION_RISK_CONFIGS["small_probe"])
+
+    def _extended_size_up_risk_assessment(
+        self,
+        opportunity: Opportunity,
+        execution_mode: str,
+        soft_risk_flag_count: int,
+        size_up_blockers: list[str],
+        execution_risk_config: ExecutionRiskConfig,
+    ) -> tuple[bool, list[str]]:
+        blockers: list[str] = []
+        extended_policy = EXECUTION_RISK_CONFIGS["extended_size_up"]
+
+        if execution_mode != "size_up":
+            blockers.append("size_up_not_achieved_blocks_extended_size_up")
+        if not opportunity.is_primary_route:
+            blockers.append("non_primary_route_blocks_extended_size_up")
+        if not opportunity.is_tradable:
+            blockers.append("non_tradable_grade_blocks_extended_size_up")
+        if opportunity.data_quality_status != "healthy":
+            blockers.append("degraded_data_quality_blocks_extended_size_up")
+        if soft_risk_flag_count > 1:
+            blockers.append("too_many_soft_risk_flags_for_extended_size_up")
+        if opportunity.size_up_edge_buffer_bps < 5.0:
+            blockers.append("insufficient_extended_size_up_edge_buffer")
+        if "missing_liquidity_data_blocks_size_up" in size_up_blockers:
+            blockers.append("missing_liquidity_blocks_extended_size_up")
+        if "degraded_data_quality_blocks_size_up" in size_up_blockers:
+            blockers.append("degraded_data_quality_blocks_extended_size_up")
+        if execution_risk_config.target_leverage > extended_policy.max_allowed_leverage:
+            blockers.append("configured_target_leverage_too_high_for_extended_size_up")
+        if (
+            execution_risk_config.min_required_liquidation_buffer_pct
+            < extended_policy.min_required_liquidation_buffer_pct
+        ):
+            blockers.append("configured_liquidation_buffer_requirement_not_strict_enough")
+
+        blockers = list(dict.fromkeys(blockers))
+        return len(blockers) == 0, blockers
 
     @staticmethod
     def _blocking_risk_count(risk_flags: list[str]) -> int:
