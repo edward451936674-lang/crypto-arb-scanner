@@ -116,11 +116,26 @@ class Opportunity(BaseModel):
     data_quality_penalty_multiplier: float = 1.0
     data_quality_adjusted_edge_bps: float = 0.0
     normal_required_edge_bps: float = 10.0
+    size_up_required_edge_bps: float = 18.0
+    size_up_edge_buffer_bps: float = 0.0
     edge_buffer_bps: float = 0.0
     normal_eligibility_score: float = 0.0
     soft_risk_flag_count: int = 0
     normal_blockers: list[str] = Field(default_factory=list)
     normal_promotion_reasons: list[str] = Field(default_factory=list)
+    size_up_blockers: list[str] = Field(default_factory=list)
+    size_up_promotion_reasons: list[str] = Field(default_factory=list)
+    mode_base_cap_pct: float = 0.0
+    extended_size_up_eligible: bool = False
+    effective_leverage: float | None = None
+    gross_notional_cap_pct: float = 0.0
+    leverage_cap_pct: float = 0.0
+    long_liquidation_distance_pct: float | None = None
+    short_liquidation_distance_pct: float | None = None
+    worst_leg_liquidation_distance_pct: float | None = None
+    liquidation_cap_pct: float = 0.0
+    final_single_cap_pct: float = 0.0
+    single_opportunity_cap_reasons: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     opportunity_grade: str
     is_tradable: bool
