@@ -576,7 +576,7 @@ class ArbitrageScannerService:
         extended_policy = EXECUTION_RISK_CONFIGS["extended_size_up"]
 
         if execution_mode != "size_up":
-            blockers.append("insufficient_extended_size_up_edge_buffer")
+            blockers.append("size_up_not_achieved_blocks_extended_size_up")
         if not opportunity.is_primary_route:
             blockers.append("non_primary_route_blocks_extended_size_up")
         if not opportunity.is_tradable:

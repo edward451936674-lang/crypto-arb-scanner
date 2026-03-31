@@ -807,6 +807,7 @@ def test_normal_only_case_has_explicit_size_up_blockers() -> None:
     item = opportunities[0]
     assert item.execution_mode == "normal"
     assert "insufficient_size_up_edge_buffer" in item.size_up_blockers
+    assert "size_up_not_achieved_blocks_extended_size_up" in item.extended_size_up_risk_blockers
     assert item.size_up_promotion_reasons == []
 
 
