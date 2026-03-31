@@ -99,6 +99,21 @@ class OpportunityCandidate:
     short_snapshot: MarketSnapshot
 
 
+@dataclass(frozen=True)
+class ExecutionRiskConfig:
+    target_leverage: float
+    max_allowed_leverage: float
+    min_required_liquidation_buffer_pct: float
+
+
+EXECUTION_RISK_CONFIGS = {
+    "small_probe": ExecutionRiskConfig(1.5, 2.0, 10.0),
+    "normal": ExecutionRiskConfig(2.0, 3.0, 15.0),
+    "size_up": ExecutionRiskConfig(2.0, 2.5, 22.0),
+    "extended_size_up": ExecutionRiskConfig(1.5, 2.0, 28.0),
+}
+
+
 class ArbitrageScannerService:
     """Build deterministic, pairwise arbitrage opportunities from market snapshots."""
 
@@ -307,6 +322,17 @@ class ArbitrageScannerService:
                     baseline_suggested_position_pct,
                 )
                 size_up_eligible = execution_mode == "size_up"
+                execution_risk_config = self._execution_risk_config(execution_mode)
+                (
+                    extended_size_up_risk_eligible,
+                    extended_size_up_risk_blockers,
+                ) = self._extended_size_up_risk_assessment(
+                    opportunity,
+                    execution_mode,
+                    soft_risk_flag_count,
+                    size_up_blockers,
+                    execution_risk_config,
+                )
                 suggested_position_pct = self._apply_execution_mode_to_suggested_position_pct(
                     baseline_suggested_position_pct,
                     execution_mode,
@@ -331,6 +357,14 @@ class ArbitrageScannerService:
                         "size_up_blockers": size_up_blockers,
                         "size_up_promotion_reasons": size_up_promotion_reasons,
                         "suggested_position_pct": suggested_position_pct,
+                        "extended_size_up_eligible": False,
+                        "configured_target_leverage": execution_risk_config.target_leverage,
+                        "configured_max_allowed_leverage": execution_risk_config.max_allowed_leverage,
+                        "configured_min_required_liquidation_buffer_pct": (
+                            execution_risk_config.min_required_liquidation_buffer_pct
+                        ),
+                        "extended_size_up_risk_eligible": extended_size_up_risk_eligible,
+                        "extended_size_up_risk_blockers": extended_size_up_risk_blockers,
                     }
                 )
         return candidates
@@ -377,29 +411,50 @@ class ArbitrageScannerService:
                 size = 0.0
                 reject_reasons.append("paper_mode")
             else:
-                size, was_clamped = self._clamp_size(size, MAX_SINGLE_OPPORTUNITY_PCT)
+                mode_base_cap_pct = self._mode_base_cap_pct(opportunity.execution_mode)
+                remaining_total = max(0.0, MAX_TOTAL_POSITION_PCT - total_used)
+                current_symbol_used = symbol_used.get(opportunity.symbol, 0.0)
+                remaining_symbol = max(0.0, MAX_SYMBOL_POSITION_PCT - current_symbol_used)
+                long_exchange_key = opportunity.long_exchange.lower()
+                short_exchange_key = opportunity.short_exchange.lower()
+                remaining_long = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(long_exchange_key, 0.0))
+                remaining_short = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(short_exchange_key, 0.0))
+                absolute_single_opportunity_cap_pct = MAX_SINGLE_OPPORTUNITY_PCT
+
+                active_cap_candidates = [
+                    mode_base_cap_pct,
+                    remaining_total,
+                    remaining_symbol,
+                    remaining_long,
+                    remaining_short,
+                    absolute_single_opportunity_cap_pct,
+                ]
+                final_single_cap_pct = max(0.0, min(active_cap_candidates))
+
+                # Reserved placeholders for a future account-risk-input phase.
+                effective_leverage = None
+                leverage_cap_pct = None
+                long_liquidation_distance_pct = None
+                short_liquidation_distance_pct = None
+                worst_leg_liquidation_distance_pct = None
+                liquidation_cap_pct = None
+
+                size, was_clamped = self._clamp_size(size, absolute_single_opportunity_cap_pct)
                 if was_clamped:
                     clamp_reasons.append("capped_by_single_opportunity_limit")
 
-                remaining_total = max(0.0, MAX_TOTAL_POSITION_PCT - total_used)
                 if remaining_total <= 0:
                     reject_reasons.append("no_total_capacity_remaining")
                 size, was_clamped = self._clamp_size(size, remaining_total)
                 if was_clamped:
                     clamp_reasons.append("capped_by_total_portfolio_limit")
 
-                current_symbol_used = symbol_used.get(opportunity.symbol, 0.0)
-                remaining_symbol = max(0.0, MAX_SYMBOL_POSITION_PCT - current_symbol_used)
                 if remaining_symbol <= 0:
                     reject_reasons.append("no_symbol_capacity_remaining")
                 size, was_clamped = self._clamp_size(size, remaining_symbol)
                 if was_clamped:
                     clamp_reasons.append("capped_by_symbol_limit")
 
-                long_exchange_key = opportunity.long_exchange.lower()
-                short_exchange_key = opportunity.short_exchange.lower()
-                remaining_long = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(long_exchange_key, 0.0))
-                remaining_short = max(0.0, MAX_EXCHANGE_POSITION_PCT - exchange_used.get(short_exchange_key, 0.0))
                 if remaining_long <= 0:
                     reject_reasons.append("no_long_exchange_capacity_remaining")
                 if remaining_short <= 0:
@@ -434,26 +489,58 @@ class ArbitrageScannerService:
             allocation_priority_label = (
                 f"{opportunity.execution_mode}_{'primary' if opportunity.is_primary_route else 'secondary'}"
             )
+            update_payload = {
+                "mode_base_cap_pct": 0.0,
+                "remaining_total_cap_pct": 0.0,
+                "remaining_symbol_cap_pct": 0.0,
+                "remaining_long_exchange_cap_pct": 0.0,
+                "remaining_short_exchange_cap_pct": 0.0,
+                "absolute_single_opportunity_cap_pct": MAX_SINGLE_OPPORTUNITY_PCT,
+                "effective_leverage": None,
+                "leverage_cap_pct": None,
+                "long_liquidation_distance_pct": None,
+                "short_liquidation_distance_pct": None,
+                "worst_leg_liquidation_distance_pct": None,
+                "liquidation_cap_pct": None,
+                "final_single_cap_pct": 0.0,
+                "final_position_pct": final_position_pct,
+                "is_executable_now": is_executable_now,
+                "portfolio_clamp_reasons": list(dict.fromkeys(clamp_reasons)),
+                "portfolio_reject_reasons": list(dict.fromkeys(reject_reasons)),
+                "portfolio_total_used_after": total_used,
+                "portfolio_symbol_used_after": symbol_used.get(opportunity.symbol, 0.0),
+                "portfolio_long_exchange_used_after": exchange_used.get(
+                    opportunity.long_exchange.lower(),
+                    0.0,
+                ),
+                "portfolio_short_exchange_used_after": exchange_used.get(
+                    opportunity.short_exchange.lower(),
+                    0.0,
+                ),
+                "portfolio_rank": rank,
+                "allocation_priority_label": allocation_priority_label,
+            }
+            if opportunity.execution_mode != "paper":
+                update_payload.update(
+                    {
+                        "mode_base_cap_pct": mode_base_cap_pct,
+                        "remaining_total_cap_pct": remaining_total,
+                        "remaining_symbol_cap_pct": remaining_symbol,
+                        "remaining_long_exchange_cap_pct": remaining_long,
+                        "remaining_short_exchange_cap_pct": remaining_short,
+                        "absolute_single_opportunity_cap_pct": absolute_single_opportunity_cap_pct,
+                        "effective_leverage": effective_leverage,
+                        "leverage_cap_pct": leverage_cap_pct,
+                        "long_liquidation_distance_pct": long_liquidation_distance_pct,
+                        "short_liquidation_distance_pct": short_liquidation_distance_pct,
+                        "worst_leg_liquidation_distance_pct": worst_leg_liquidation_distance_pct,
+                        "liquidation_cap_pct": liquidation_cap_pct,
+                        "final_single_cap_pct": final_single_cap_pct,
+                    }
+                )
             allocated.append(
                 opportunity.model_copy(
-                    update={
-                        "final_position_pct": final_position_pct,
-                        "is_executable_now": is_executable_now,
-                        "portfolio_clamp_reasons": list(dict.fromkeys(clamp_reasons)),
-                        "portfolio_reject_reasons": list(dict.fromkeys(reject_reasons)),
-                        "portfolio_total_used_after": total_used,
-                        "portfolio_symbol_used_after": symbol_used.get(opportunity.symbol, 0.0),
-                        "portfolio_long_exchange_used_after": exchange_used.get(
-                            opportunity.long_exchange.lower(),
-                            0.0,
-                        ),
-                        "portfolio_short_exchange_used_after": exchange_used.get(
-                            opportunity.short_exchange.lower(),
-                            0.0,
-                        ),
-                        "portfolio_rank": rank,
-                        "allocation_priority_label": allocation_priority_label,
-                    }
+                    update=update_payload
                 )
             )
         return allocated
@@ -462,6 +549,58 @@ class ArbitrageScannerService:
     def _clamp_size(size: float, cap: float) -> tuple[float, bool]:
         capped = min(size, max(0.0, cap))
         return capped, capped < size
+
+    @staticmethod
+    def _mode_base_cap_pct(execution_mode: str) -> float:
+        if execution_mode == "small_probe":
+            return 0.005
+        if execution_mode == "normal":
+            return 0.02
+        if execution_mode == "size_up":
+            return 0.05
+        return 0.0
+
+    @staticmethod
+    def _execution_risk_config(execution_mode: str) -> ExecutionRiskConfig:
+        return EXECUTION_RISK_CONFIGS.get(execution_mode, EXECUTION_RISK_CONFIGS["small_probe"])
+
+    def _extended_size_up_risk_assessment(
+        self,
+        opportunity: Opportunity,
+        execution_mode: str,
+        soft_risk_flag_count: int,
+        size_up_blockers: list[str],
+        execution_risk_config: ExecutionRiskConfig,
+    ) -> tuple[bool, list[str]]:
+        blockers: list[str] = []
+        extended_policy = EXECUTION_RISK_CONFIGS["extended_size_up"]
+
+        if execution_mode != "size_up":
+            blockers.append("insufficient_extended_size_up_edge_buffer")
+        if not opportunity.is_primary_route:
+            blockers.append("non_primary_route_blocks_extended_size_up")
+        if not opportunity.is_tradable:
+            blockers.append("non_tradable_grade_blocks_extended_size_up")
+        if opportunity.data_quality_status != "healthy":
+            blockers.append("degraded_data_quality_blocks_extended_size_up")
+        if soft_risk_flag_count > 1:
+            blockers.append("too_many_soft_risk_flags_for_extended_size_up")
+        if opportunity.size_up_edge_buffer_bps < 5.0:
+            blockers.append("insufficient_extended_size_up_edge_buffer")
+        if "missing_liquidity_data_blocks_size_up" in size_up_blockers:
+            blockers.append("missing_liquidity_blocks_extended_size_up")
+        if "degraded_data_quality_blocks_size_up" in size_up_blockers:
+            blockers.append("degraded_data_quality_blocks_extended_size_up")
+        if execution_risk_config.target_leverage > extended_policy.max_allowed_leverage:
+            blockers.append("configured_target_leverage_too_high_for_extended_size_up")
+        if (
+            execution_risk_config.min_required_liquidation_buffer_pct
+            < extended_policy.min_required_liquidation_buffer_pct
+        ):
+            blockers.append("configured_liquidation_buffer_requirement_not_strict_enough")
+
+        blockers = list(dict.fromkeys(blockers))
+        return len(blockers) == 0, blockers
 
     @staticmethod
     def _blocking_risk_count(risk_flags: list[str]) -> int:
