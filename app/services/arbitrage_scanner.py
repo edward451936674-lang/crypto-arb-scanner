@@ -322,7 +322,9 @@ class ArbitrageScannerService:
                     baseline_suggested_position_pct,
                 )
                 # Framework-first placeholders only; these are intentionally
-                # non-authoritative until stable account/position risk inputs exist.
+                # non-authoritative until stable account/position risk inputs exist:
+                # effective_leverage, leverage_cap_pct, long/short/worst liquidation
+                # distance, and liquidation_cap_pct.
                 extended_size_up_eligible = False
                 mode_base_cap_pct = self._mode_base_cap_pct(execution_mode)
                 gross_notional_cap_pct = self._mode_gross_notional_cap_pct(execution_mode)
