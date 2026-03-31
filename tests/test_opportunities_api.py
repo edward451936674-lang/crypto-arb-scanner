@@ -361,6 +361,7 @@ def test_execution_mode_normal_only_when_thresholds_met() -> None:
     assert item.normal_required_edge_bps == 10.0
     assert item.edge_buffer_bps >= 0.0
     assert item.normal_eligibility_score > 0.0
+    assert item.mode_base_cap_pct == 0.02
     assert item.is_executable_now is True
 
 
@@ -376,6 +377,7 @@ def test_execution_mode_size_up_requires_all_strict_conditions() -> None:
     item = opportunities[0]
     assert item.execution_mode == "size_up"
     assert item.size_up_eligible is True
+    assert item.mode_base_cap_pct == 0.05
     assert item.is_executable_now is True
     assert "strong_risk_adjusted_edge" in item.execution_mode_drivers
 

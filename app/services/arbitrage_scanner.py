@@ -378,7 +378,7 @@ class ArbitrageScannerService:
                 size = 0.0
                 reject_reasons.append("paper_mode")
             else:
-                mode_base_cap_pct = max(0.0, opportunity.max_position_pct)
+                mode_base_cap_pct = self._mode_base_cap_pct(opportunity.execution_mode)
                 remaining_total = max(0.0, MAX_TOTAL_POSITION_PCT - total_used)
                 current_symbol_used = symbol_used.get(opportunity.symbol, 0.0)
                 remaining_symbol = max(0.0, MAX_SYMBOL_POSITION_PCT - current_symbol_used)
@@ -516,6 +516,16 @@ class ArbitrageScannerService:
     def _clamp_size(size: float, cap: float) -> tuple[float, bool]:
         capped = min(size, max(0.0, cap))
         return capped, capped < size
+
+    @staticmethod
+    def _mode_base_cap_pct(execution_mode: str) -> float:
+        if execution_mode == "small_probe":
+            return 0.005
+        if execution_mode == "normal":
+            return 0.02
+        if execution_mode == "size_up":
+            return 0.05
+        return 0.0
 
     @staticmethod
     def _blocking_risk_count(risk_flags: list[str]) -> int:
