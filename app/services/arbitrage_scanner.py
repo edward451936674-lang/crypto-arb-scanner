@@ -53,6 +53,9 @@ MODE_GROSS_NOTIONAL_CAP_PCT = {
     "normal": 0.05,
     "size_up": 0.12,
 }
+# Framework-first note:
+# gross-notional / leverage / liquidation fields are exposed for forward
+# compatibility, but leverage/liquidation are not active cap inputs yet.
 EXECUTION_MODE_PRIORITY = {
     "paper": 0,
     "small_probe": 1,
@@ -318,6 +321,8 @@ class ArbitrageScannerService:
                     conviction_score,
                     baseline_suggested_position_pct,
                 )
+                # Framework-first placeholders only; these are intentionally
+                # non-authoritative until stable account/position risk inputs exist.
                 extended_size_up_eligible = False
                 mode_base_cap_pct = self._mode_base_cap_pct(execution_mode)
                 gross_notional_cap_pct = self._mode_gross_notional_cap_pct(execution_mode)
@@ -428,6 +433,8 @@ class ArbitrageScannerService:
                     reject_reasons.append("no_long_exchange_capacity_remaining")
                 if remaining_short <= 0:
                     reject_reasons.append("no_short_exchange_capacity_remaining")
+                # Active single-opportunity cap inputs for framework-first v1:
+                # mode base cap + remaining portfolio caps + absolute hard cap.
                 cap_candidates = {
                     "mode_base_cap_pct": opportunity.mode_base_cap_pct,
                     "remaining_total_cap_pct": remaining_total,
