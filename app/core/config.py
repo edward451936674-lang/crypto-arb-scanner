@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     lighter_ws_timeout_seconds: float = 5.0
 
     execution_extended_size_up_enabled: bool = True
+    execution_policy_profile: str = "dev_default"
     execution_live_target_leverage: float = 1.5
     execution_live_max_allowed_leverage: float = 2.0
     execution_live_required_liquidation_buffer_pct: float = 28.0
