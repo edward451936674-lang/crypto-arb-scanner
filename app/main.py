@@ -8,6 +8,7 @@ from app.services.data_quality_gate import MarketDataQualityGate
 from app.services.execution_sizing_policy import (
     ExecutionSizingPolicyEvaluator,
     build_execution_account_inputs,
+    resolve_execution_policy_profile,
 )
 from app.services.market_data import MarketDataService
 
@@ -26,6 +27,7 @@ async def healthz() -> dict[str, str]:
 
 @app.get("/api/v1/meta")
 async def meta() -> dict[str, object]:
+    resolved_execution_policy = resolve_execution_policy_profile(settings)
     return {
         "supported_symbols": supported_symbols(),
         "enabled_exchanges": {
@@ -35,6 +37,17 @@ async def meta() -> dict[str, object]:
             "lighter": settings.enable_lighter,
         },
         "default_symbols": settings.default_symbols,
+        "execution_policy_profile": settings.execution_policy_profile,
+        "execution_policy_resolved": {
+            "extended_size_up_enabled": resolved_execution_policy.extended_size_up_enabled,
+            "live_target_leverage": resolved_execution_policy.live_target_leverage,
+            "live_max_allowed_leverage": resolved_execution_policy.live_max_allowed_leverage,
+            "live_required_liquidation_buffer_pct": resolved_execution_policy.live_required_liquidation_buffer_pct,
+            "live_remaining_total_cap_pct": resolved_execution_policy.live_remaining_total_cap_pct,
+            "live_remaining_symbol_cap_pct": resolved_execution_policy.live_remaining_symbol_cap_pct,
+            "live_remaining_long_exchange_cap_pct": resolved_execution_policy.live_remaining_long_exchange_cap_pct,
+            "live_remaining_short_exchange_cap_pct": resolved_execution_policy.live_remaining_short_exchange_cap_pct,
+        },
     }
 
 
