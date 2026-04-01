@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 
+from app.core.config import Settings
 from app.models.market import Opportunity
 
 
@@ -85,3 +86,32 @@ class ExecutionSizingPolicyEvaluator:
             execution_max_single_cap_pct=execution_max_single_cap_pct,
             execution_cap_reasons=list(dict.fromkeys(cap_reasons)),
         )
+
+
+def build_execution_account_inputs(settings: Settings, opportunity: Opportunity) -> ExecutionAccountInputs:
+    return ExecutionAccountInputs(
+        extended_size_up_enabled=settings.execution_extended_size_up_enabled,
+        live_target_leverage=settings.execution_live_target_leverage,
+        live_max_allowed_leverage=settings.execution_live_max_allowed_leverage,
+        live_required_liquidation_buffer_pct=settings.execution_live_required_liquidation_buffer_pct,
+        live_remaining_total_cap_pct=_remaining_capacity(
+            opportunity.remaining_total_cap_pct,
+            settings.execution_live_remaining_total_cap_pct,
+        ),
+        live_remaining_symbol_cap_pct=_remaining_capacity(
+            opportunity.remaining_symbol_cap_pct,
+            settings.execution_live_remaining_symbol_cap_pct,
+        ),
+        live_remaining_long_exchange_cap_pct=_remaining_capacity(
+            opportunity.remaining_long_exchange_cap_pct,
+            settings.execution_live_remaining_long_exchange_cap_pct,
+        ),
+        live_remaining_short_exchange_cap_pct=_remaining_capacity(
+            opportunity.remaining_short_exchange_cap_pct,
+            settings.execution_live_remaining_short_exchange_cap_pct,
+        ),
+    )
+
+
+def _remaining_capacity(opportunity_value: float, default_value: float) -> float:
+    return opportunity_value if opportunity_value > 0 else default_value
