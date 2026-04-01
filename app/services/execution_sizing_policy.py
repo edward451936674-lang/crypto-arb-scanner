@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 
+from app.core.config import Settings
 from app.models.market import Opportunity
 
 
@@ -21,6 +22,93 @@ class ExecutionSizingDecision:
     extended_size_up_execution_blockers: list[str] = field(default_factory=list)
     execution_max_single_cap_pct: float = 0.0
     execution_cap_reasons: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ExecutionPolicyProfile:
+    extended_size_up_enabled: bool
+    live_target_leverage: float
+    live_max_allowed_leverage: float
+    live_required_liquidation_buffer_pct: float
+    live_remaining_total_cap_pct: float
+    live_remaining_symbol_cap_pct: float
+    live_remaining_long_exchange_cap_pct: float
+    live_remaining_short_exchange_cap_pct: float
+
+
+EXECUTION_POLICY_PROFILES: dict[str, ExecutionPolicyProfile] = {
+    "dev_default": ExecutionPolicyProfile(
+        extended_size_up_enabled=True,
+        live_target_leverage=1.5,
+        live_max_allowed_leverage=2.0,
+        live_required_liquidation_buffer_pct=28.0,
+        live_remaining_total_cap_pct=0.08,
+        live_remaining_symbol_cap_pct=0.08,
+        live_remaining_long_exchange_cap_pct=0.08,
+        live_remaining_short_exchange_cap_pct=0.08,
+    ),
+    "paper_conservative": ExecutionPolicyProfile(
+        extended_size_up_enabled=False,
+        live_target_leverage=1.0,
+        live_max_allowed_leverage=1.5,
+        live_required_liquidation_buffer_pct=30.0,
+        live_remaining_total_cap_pct=0.05,
+        live_remaining_symbol_cap_pct=0.05,
+        live_remaining_long_exchange_cap_pct=0.05,
+        live_remaining_short_exchange_cap_pct=0.05,
+    ),
+    "live_conservative": ExecutionPolicyProfile(
+        extended_size_up_enabled=False,
+        live_target_leverage=1.0,
+        live_max_allowed_leverage=1.5,
+        live_required_liquidation_buffer_pct=35.0,
+        live_remaining_total_cap_pct=0.05,
+        live_remaining_symbol_cap_pct=0.03,
+        live_remaining_long_exchange_cap_pct=0.05,
+        live_remaining_short_exchange_cap_pct=0.05,
+    ),
+}
+
+
+def resolve_execution_policy_profile(settings: Settings) -> ExecutionPolicyProfile:
+    profile = EXECUTION_POLICY_PROFILES.get(settings.execution_policy_profile)
+    if profile is None:
+        supported_profiles = ", ".join(sorted(EXECUTION_POLICY_PROFILES.keys()))
+        raise ValueError(
+            f"Unknown execution_policy_profile='{settings.execution_policy_profile}'. "
+            f"Supported profiles: {supported_profiles}."
+        )
+    return profile
+
+
+def _cap_with_default(value: float, default_value: float) -> float:
+    return value if value > 0.0 else default_value
+
+
+def build_execution_account_inputs(settings: Settings, opportunity: Opportunity) -> ExecutionAccountInputs:
+    profile = resolve_execution_policy_profile(settings)
+    return ExecutionAccountInputs(
+        extended_size_up_enabled=profile.extended_size_up_enabled,
+        live_target_leverage=profile.live_target_leverage,
+        live_max_allowed_leverage=profile.live_max_allowed_leverage,
+        live_required_liquidation_buffer_pct=profile.live_required_liquidation_buffer_pct,
+        live_remaining_total_cap_pct=_cap_with_default(
+            opportunity.remaining_total_cap_pct,
+            profile.live_remaining_total_cap_pct,
+        ),
+        live_remaining_symbol_cap_pct=_cap_with_default(
+            opportunity.remaining_symbol_cap_pct,
+            profile.live_remaining_symbol_cap_pct,
+        ),
+        live_remaining_long_exchange_cap_pct=_cap_with_default(
+            opportunity.remaining_long_exchange_cap_pct,
+            profile.live_remaining_long_exchange_cap_pct,
+        ),
+        live_remaining_short_exchange_cap_pct=_cap_with_default(
+            opportunity.remaining_short_exchange_cap_pct,
+            profile.live_remaining_short_exchange_cap_pct,
+        ),
+    )
 
 
 class ExecutionSizingPolicyEvaluator:

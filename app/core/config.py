@@ -26,6 +26,17 @@ class Settings(BaseSettings):
     lighter_markets_url: str = "https://explorer.elliot.ai/api/markets"
     lighter_ws_timeout_seconds: float = 5.0
 
+    execution_policy_profile: str = "dev_default"
+
+    execution_extended_size_up_enabled: bool = True
+    execution_live_target_leverage: float = 1.5
+    execution_live_max_allowed_leverage: float = 2.0
+    execution_live_required_liquidation_buffer_pct: float = 28.0
+    execution_live_remaining_total_cap_pct: float = 0.08
+    execution_live_remaining_symbol_cap_pct: float = 0.08
+    execution_live_remaining_long_exchange_cap_pct: float = 0.08
+    execution_live_remaining_short_exchange_cap_pct: float = 0.08
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="ARB_",
