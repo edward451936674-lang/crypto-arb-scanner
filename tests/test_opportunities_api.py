@@ -240,6 +240,138 @@ def test_get_opportunities_sets_paper_mode_to_zero_position(monkeypatch) -> None
     assert "paper_mode" in item["portfolio_reject_reasons"]
 
 
+
+
+def _assert_execution_overlay_fields(item: dict) -> None:
+    assert "extended_size_up_execution_ready" in item
+    assert "extended_size_up_execution_blockers" in item
+    assert "execution_max_single_cap_pct" in item
+    assert "execution_cap_reasons" in item
+
+
+def test_get_opportunities_controlled_strong_size_up_candidate(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    _assert_execution_overlay_fields(item)
+    assert item["execution_mode"] == "size_up"
+    assert item["size_up_eligible"] is True
+    assert item["size_up_promotion_reasons"]
+    assert item["mode_base_cap_pct"] == 0.05
+    assert item["final_single_cap_pct"] <= 0.05
+
+
+def test_get_opportunities_controlled_normal_not_size_up_candidate(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.0002, funding_rate_source="latest_reported"),
+                _snapshot("okx", 100.22, funding_rate=0.0002, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    _assert_execution_overlay_fields(item)
+    assert item["execution_mode"] == "normal"
+    assert item["size_up_eligible"] is False
+    assert item["size_up_blockers"]
+    assert item["normal_promotion_reasons"]
+
+
+def test_get_opportunities_controlled_paper_watchlist_candidate(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot(
+                    "binance",
+                    100.0,
+                    funding_rate_source="latest_reported",
+                    open_interest_usd=None,
+                    quote_volume_24h_usd=None,
+                ),
+                _snapshot(
+                    "okx",
+                    100.24,
+                    funding_rate_source="last_settled_fallback",
+                    funding_period_hours=8,
+                    open_interest_usd=None,
+                    quote_volume_24h_usd=None,
+                ),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    _assert_execution_overlay_fields(item)
+    assert item["execution_mode"] == "paper"
+    assert item["final_position_pct"] == 0.0
+    assert item["portfolio_reject_reasons"]
+
+
+def test_get_opportunities_exposes_execution_readiness_overlay(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    from app.services.execution_sizing_policy import ExecutionSizingDecision
+
+    monkeypatch.setattr(
+        ExecutionSizingPolicyEvaluator,
+        "evaluate",
+        staticmethod(
+            lambda opportunity, account_inputs: ExecutionSizingDecision(
+                extended_size_up_execution_ready=True,
+                extended_size_up_execution_blockers=["none"],
+                execution_max_single_cap_pct=0.037,
+                execution_cap_reasons=["capped_by_live_remaining_symbol"],
+            )
+        ),
+    )
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    assert item["extended_size_up_execution_ready"] is True
+    assert item["extended_size_up_execution_blockers"] == ["none"]
+    assert item["execution_max_single_cap_pct"] == 0.037
+    assert item["execution_cap_reasons"] == ["capped_by_live_remaining_symbol"]
+
+
 def test_routes_with_same_long_exchange_share_cluster_and_single_primary() -> None:
     scanner = ArbitrageScannerService()
 
