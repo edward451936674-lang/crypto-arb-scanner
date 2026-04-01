@@ -372,6 +372,37 @@ def test_get_opportunities_exposes_execution_readiness_overlay(monkeypatch) -> N
     assert item["execution_cap_reasons"] == ["capped_by_live_remaining_symbol"]
 
 
+def test_get_opportunities_natural_extended_size_up_risk_eligible(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    original_size_up_config = EXECUTION_RISK_CONFIGS["size_up"]
+    EXECUTION_RISK_CONFIGS["size_up"] = ExecutionRiskConfig(1.5, 2.0, 28.0)
+    try:
+        response = asyncio.run(get_opportunities(symbols="BTC"))
+    finally:
+        EXECUTION_RISK_CONFIGS["size_up"] = original_size_up_config
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    assert item["execution_mode"] == "size_up"
+    assert item["size_up_eligible"] is True
+    assert item["extended_size_up_risk_eligible"] is True
+    assert item["extended_size_up_risk_blockers"] == []
+    assert "extended_size_up_execution_ready" in item
+    assert "execution_max_single_cap_pct" in item
+    assert item["final_single_cap_pct"] <= 0.05
+
+
 def test_routes_with_same_long_exchange_share_cluster_and_single_primary() -> None:
     scanner = ArbitrageScannerService()
 
