@@ -150,6 +150,10 @@ class Opportunity(BaseModel):
     configured_min_required_liquidation_buffer_pct: float | None = None
     extended_size_up_risk_eligible: bool = False
     extended_size_up_risk_blockers: list[str] = Field(default_factory=list)
+    extended_size_up_execution_ready: bool = False
+    extended_size_up_execution_blockers: list[str] = Field(default_factory=list)
+    execution_max_single_cap_pct: float = 0.0
+    execution_cap_reasons: list[str] = Field(default_factory=list)
     final_position_pct: float = 0.0
     is_executable_now: bool = False
     max_position_pct: float

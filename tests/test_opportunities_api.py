@@ -1085,3 +1085,96 @@ def test_size_up_promotion_reasons_only_present_for_size_up_mode() -> None:
     assert normal_item.size_up_promotion_reasons == []
     assert small_probe_item.execution_mode == "small_probe"
     assert small_probe_item.size_up_promotion_reasons == []
+
+
+def test_get_opportunities_hydrates_execution_sizing_fields(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    item = response["opportunities"][0]
+
+    assert "extended_size_up_execution_ready" in item
+    assert "extended_size_up_execution_blockers" in item
+    assert "execution_max_single_cap_pct" in item
+    assert "execution_cap_reasons" in item
+    assert item["final_single_cap_pct"] <= 0.05 + 1e-12
+
+
+def test_risk_eligible_size_up_can_be_execution_ready_under_default_inputs(monkeypatch) -> None:
+    scanner = ArbitrageScannerService()
+    base_opportunity = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0]
+    execution_ready_opportunity = base_opportunity.model_copy(
+        update={
+            "execution_mode": "size_up",
+            "extended_size_up_risk_eligible": True,
+            "remaining_total_cap_pct": 0.20,
+            "remaining_symbol_cap_pct": 0.08,
+            "remaining_long_exchange_cap_pct": 0.10,
+            "remaining_short_exchange_cap_pct": 0.10,
+            "final_single_cap_pct": 0.05,
+        }
+    )
+
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(requested_symbols=symbols, snapshots=[], errors=[])
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        return [execution_ready_opportunity]
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    item = response["opportunities"][0]
+    assert item["extended_size_up_execution_ready"] is True
+    assert item["execution_max_single_cap_pct"] == 0.08
+    assert item["final_single_cap_pct"] == 0.05
+
+
+def test_non_risk_eligible_opportunity_remains_execution_not_ready(monkeypatch) -> None:
+    scanner = ArbitrageScannerService()
+    base_opportunity = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0]
+    not_ready_opportunity = base_opportunity.model_copy(
+        update={
+            "execution_mode": "size_up",
+            "extended_size_up_risk_eligible": False,
+            "remaining_total_cap_pct": 0.20,
+            "remaining_symbol_cap_pct": 0.08,
+            "remaining_long_exchange_cap_pct": 0.10,
+            "remaining_short_exchange_cap_pct": 0.10,
+        }
+    )
+
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(requested_symbols=symbols, snapshots=[], errors=[])
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        return [not_ready_opportunity]
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    item = response["opportunities"][0]
+    assert item["extended_size_up_execution_ready"] is False
+    assert "extended_size_up_risk_not_eligible" in item["extended_size_up_execution_blockers"]
