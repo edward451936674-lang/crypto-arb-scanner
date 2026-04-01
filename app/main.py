@@ -2,9 +2,10 @@ from fastapi import FastAPI, HTTPException, Query
 
 from app.core.config import get_settings
 from app.core.symbols import parse_symbols, supported_symbols
-from app.models.market import OpportunitiesResponse
+from app.models.market import OpportunitiesResponse, Opportunity
 from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.data_quality_gate import MarketDataQualityGate
+from app.services.execution_sizing_policy import ExecutionAccountInputs, ExecutionSizingPolicyEvaluator
 from app.services.market_data import MarketDataService
 
 settings = get_settings()
@@ -74,7 +75,40 @@ async def get_opportunities(
 
     response = OpportunitiesResponse(
         requested_symbols=market_data.requested_symbols,
-        opportunities=scanner.build_opportunities(accepted_snapshots),
+        opportunities=_hydrate_execution_sizing_outputs(scanner.build_opportunities(accepted_snapshots)),
         snapshot_errors=market_data.errors,
     )
     return response.model_dump()
+
+
+def build_default_execution_account_inputs(opportunity: Opportunity) -> ExecutionAccountInputs:
+    return ExecutionAccountInputs(
+        extended_size_up_enabled=True,
+        live_target_leverage=1.5,
+        live_max_allowed_leverage=2.0,
+        live_required_liquidation_buffer_pct=28.0,
+        live_remaining_total_cap_pct=opportunity.remaining_total_cap_pct,
+        live_remaining_symbol_cap_pct=opportunity.remaining_symbol_cap_pct,
+        live_remaining_long_exchange_cap_pct=opportunity.remaining_long_exchange_cap_pct,
+        live_remaining_short_exchange_cap_pct=opportunity.remaining_short_exchange_cap_pct,
+    )
+
+
+def _hydrate_execution_sizing_outputs(opportunities: list[Opportunity]) -> list[Opportunity]:
+    hydrated = []
+    for opportunity in opportunities:
+        decision = ExecutionSizingPolicyEvaluator.evaluate(
+            opportunity=opportunity,
+            account_inputs=build_default_execution_account_inputs(opportunity),
+        )
+        hydrated.append(
+            opportunity.model_copy(
+                update={
+                    "extended_size_up_execution_ready": decision.extended_size_up_execution_ready,
+                    "extended_size_up_execution_blockers": decision.extended_size_up_execution_blockers,
+                    "execution_max_single_cap_pct": decision.execution_max_single_cap_pct,
+                    "execution_cap_reasons": decision.execution_cap_reasons,
+                }
+            )
+        )
+    return hydrated
