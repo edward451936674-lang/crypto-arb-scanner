@@ -5,7 +5,10 @@ from app.core.symbols import parse_symbols, supported_symbols
 from app.models.market import OpportunitiesResponse, Opportunity
 from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.data_quality_gate import MarketDataQualityGate
-from app.services.execution_sizing_policy import ExecutionAccountInputs, ExecutionSizingPolicyEvaluator
+from app.services.execution_sizing_policy import (
+    ExecutionSizingPolicyEvaluator,
+    build_execution_account_inputs,
+)
 from app.services.market_data import MarketDataService
 
 settings = get_settings()
@@ -81,25 +84,12 @@ async def get_opportunities(
     return response.model_dump()
 
 
-def build_default_execution_account_inputs(opportunity: Opportunity) -> ExecutionAccountInputs:
-    return ExecutionAccountInputs(
-        extended_size_up_enabled=True,
-        live_target_leverage=1.5,
-        live_max_allowed_leverage=2.0,
-        live_required_liquidation_buffer_pct=28.0,
-        live_remaining_total_cap_pct=opportunity.remaining_total_cap_pct,
-        live_remaining_symbol_cap_pct=opportunity.remaining_symbol_cap_pct,
-        live_remaining_long_exchange_cap_pct=opportunity.remaining_long_exchange_cap_pct,
-        live_remaining_short_exchange_cap_pct=opportunity.remaining_short_exchange_cap_pct,
-    )
-
-
 def _hydrate_execution_sizing_outputs(opportunities: list[Opportunity]) -> list[Opportunity]:
     hydrated = []
     for opportunity in opportunities:
         decision = ExecutionSizingPolicyEvaluator.evaluate(
             opportunity=opportunity,
-            account_inputs=build_default_execution_account_inputs(opportunity),
+            account_inputs=build_execution_account_inputs(settings, opportunity),
         )
         hydrated.append(
             opportunity.model_copy(
