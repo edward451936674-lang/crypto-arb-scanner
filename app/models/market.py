@@ -131,6 +131,29 @@ class Opportunity(BaseModel):
     reject_reasons: list[str] = Field(default_factory=list)
     position_size_multiplier: float
     suggested_position_pct: float
+    mode_base_cap_pct: float = 0.0
+    remaining_total_cap_pct: float = 0.0
+    remaining_symbol_cap_pct: float = 0.0
+    remaining_long_exchange_cap_pct: float = 0.0
+    remaining_short_exchange_cap_pct: float = 0.0
+    absolute_single_opportunity_cap_pct: float = 0.0
+    effective_leverage: float | None = None
+    leverage_cap_pct: float | None = None
+    long_liquidation_distance_pct: float | None = None
+    short_liquidation_distance_pct: float | None = None
+    worst_leg_liquidation_distance_pct: float | None = None
+    liquidation_cap_pct: float | None = None
+    final_single_cap_pct: float = 0.0
+    extended_size_up_eligible: bool = False
+    configured_target_leverage: float | None = None
+    configured_max_allowed_leverage: float | None = None
+    configured_min_required_liquidation_buffer_pct: float | None = None
+    extended_size_up_risk_eligible: bool = False
+    extended_size_up_risk_blockers: list[str] = Field(default_factory=list)
+    extended_size_up_execution_ready: bool = False
+    extended_size_up_execution_blockers: list[str] = Field(default_factory=list)
+    execution_max_single_cap_pct: float = 0.0
+    execution_cap_reasons: list[str] = Field(default_factory=list)
     final_position_pct: float = 0.0
     is_executable_now: bool = False
     max_position_pct: float

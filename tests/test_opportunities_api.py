@@ -3,7 +3,11 @@ import time
 
 from app.main import get_opportunities
 from app.models.market import MarketDataResponse, MarketSnapshot
-from app.services.arbitrage_scanner import ArbitrageScannerService
+from app.services.arbitrage_scanner import ArbitrageScannerService, EXECUTION_RISK_CONFIGS, ExecutionRiskConfig
+from app.services.execution_sizing_policy import (
+    ExecutionAccountInputs,
+    ExecutionSizingPolicyEvaluator,
+)
 from app.services.market_data import MarketDataService
 
 
@@ -66,6 +70,10 @@ def test_get_opportunities_returns_ranked_items(monkeypatch) -> None:
     assert item["suggested_position_pct"] == item["max_position_pct"]
     assert item["final_position_pct"] <= item["suggested_position_pct"]
     assert item["portfolio_rank"] == 1
+    assert item["extended_size_up_execution_ready"] is False
+    assert "extended_size_up_risk_not_eligible" in item["extended_size_up_execution_blockers"]
+    assert item["execution_max_single_cap_pct"] == 0.05
+    assert "capped_by_execution_base_cap" in item["execution_cap_reasons"]
 
 
 def test_get_opportunities_filters_non_positive_net_edge(monkeypatch) -> None:
@@ -133,6 +141,41 @@ def test_strong_primary_route_can_be_medium_conviction_and_normal(monkeypatch) -
     assert item["size_up_eligible"] is False
     assert "adequate_liquidity" in item["conviction_drivers"]
     assert "primary_route" in item["conviction_drivers"]
+    assert item["extended_size_up_execution_ready"] is False
+    assert "extended_size_up_risk_not_eligible" in item["extended_size_up_execution_blockers"]
+    assert item["execution_max_single_cap_pct"] == 0.05
+
+
+def test_get_opportunities_hydrates_execution_ready_when_risk_eligible(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    scanner = ArbitrageScannerService()
+    risk_eligible_item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0].model_copy(update={"extended_size_up_risk_eligible": True})
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        return [risk_eligible_item]
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    item = response["opportunities"][0]
+    assert item["extended_size_up_execution_ready"] is True
+    assert item["extended_size_up_execution_blockers"] == []
+    assert item["execution_max_single_cap_pct"] == 0.08
 
 
 def test_missing_liquidity_routes_score_lower_than_clean_routes() -> None:
@@ -361,6 +404,7 @@ def test_execution_mode_normal_only_when_thresholds_met() -> None:
     assert item.normal_required_edge_bps == 10.0
     assert item.edge_buffer_bps >= 0.0
     assert item.normal_eligibility_score > 0.0
+    assert item.mode_base_cap_pct == 0.02
     assert item.is_executable_now is True
 
 
@@ -376,6 +420,7 @@ def test_execution_mode_size_up_requires_all_strict_conditions() -> None:
     item = opportunities[0]
     assert item.execution_mode == "size_up"
     assert item.size_up_eligible is True
+    assert item.mode_base_cap_pct == 0.05
     assert item.is_executable_now is True
     assert "strong_risk_adjusted_edge" in item.execution_mode_drivers
 
@@ -776,6 +821,11 @@ def test_size_up_clean_case_includes_size_up_metadata_and_reasons() -> None:
     assert item.size_up_edge_buffer_bps == (item.data_quality_adjusted_edge_bps - item.size_up_required_edge_bps)
     assert item.size_up_blockers == []
     assert "meets_size_up_thresholds" in item.size_up_promotion_reasons
+    assert item.configured_target_leverage == 2.0
+    assert item.configured_max_allowed_leverage == 2.5
+    assert item.configured_min_required_liquidation_buffer_pct == 22.0
+    assert item.extended_size_up_risk_eligible is False
+    assert "configured_liquidation_buffer_requirement_not_strict_enough" in item.extended_size_up_risk_blockers
 
 
 def test_normal_only_case_has_explicit_size_up_blockers() -> None:
@@ -800,6 +850,7 @@ def test_normal_only_case_has_explicit_size_up_blockers() -> None:
     item = opportunities[0]
     assert item.execution_mode == "normal"
     assert "insufficient_size_up_edge_buffer" in item.size_up_blockers
+    assert "size_up_not_achieved_blocks_extended_size_up" in item.extended_size_up_risk_blockers
     assert item.size_up_promotion_reasons == []
 
 
@@ -846,6 +897,174 @@ def test_missing_liquidity_explicitly_blocks_size_up() -> None:
     item = opportunities[0]
     assert item.execution_mode == "small_probe"
     assert "missing_liquidity_data_blocks_size_up" in item.size_up_blockers
+    assert item.extended_size_up_risk_eligible is False
+    assert "missing_liquidity_blocks_extended_size_up" in item.extended_size_up_risk_blockers
+
+
+def test_clean_size_up_can_be_extended_risk_eligible_when_policy_is_strict() -> None:
+    scanner = ArbitrageScannerService()
+    original_size_up_config = EXECUTION_RISK_CONFIGS["size_up"]
+    EXECUTION_RISK_CONFIGS["size_up"] = ExecutionRiskConfig(1.5, 2.0, 28.0)
+    try:
+        opportunities = scanner.build_opportunities(
+            [
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ]
+        )
+    finally:
+        EXECUTION_RISK_CONFIGS["size_up"] = original_size_up_config
+
+    item = opportunities[0]
+    assert item.execution_mode == "size_up"
+    assert item.extended_size_up_risk_eligible is True
+    assert item.extended_size_up_risk_blockers == []
+
+
+def test_extended_risk_scaffolding_does_not_change_final_single_cap_pct_behavior() -> None:
+    scanner = ArbitrageScannerService()
+    opportunities = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )
+
+    item = opportunities[0]
+    assert item.absolute_single_opportunity_cap_pct == 0.05
+    assert item.final_single_cap_pct <= 0.05 + 1e-12
+
+
+def test_execution_policy_blocks_when_risk_not_eligible() -> None:
+    scanner = ArbitrageScannerService()
+    item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0].model_copy(update={"extended_size_up_risk_eligible": False})
+
+    decision = ExecutionSizingPolicyEvaluator.evaluate(
+        item,
+        ExecutionAccountInputs(
+            extended_size_up_enabled=True,
+            live_target_leverage=1.5,
+            live_max_allowed_leverage=2.0,
+            live_required_liquidation_buffer_pct=28.0,
+            live_remaining_total_cap_pct=0.2,
+            live_remaining_symbol_cap_pct=0.08,
+            live_remaining_long_exchange_cap_pct=0.1,
+            live_remaining_short_exchange_cap_pct=0.1,
+        ),
+    )
+    assert decision.extended_size_up_execution_ready is False
+    assert "extended_size_up_risk_not_eligible" in decision.extended_size_up_execution_blockers
+
+
+def test_execution_policy_fully_ready_allows_up_to_eight_percent_cap() -> None:
+    scanner = ArbitrageScannerService()
+    item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0].model_copy(update={"extended_size_up_risk_eligible": True})
+
+    decision = ExecutionSizingPolicyEvaluator.evaluate(
+        item,
+        ExecutionAccountInputs(
+            extended_size_up_enabled=True,
+            live_target_leverage=1.5,
+            live_max_allowed_leverage=2.0,
+            live_required_liquidation_buffer_pct=28.0,
+            live_remaining_total_cap_pct=0.2,
+            live_remaining_symbol_cap_pct=0.08,
+            live_remaining_long_exchange_cap_pct=0.1,
+            live_remaining_short_exchange_cap_pct=0.1,
+        ),
+    )
+    assert decision.extended_size_up_execution_ready is True
+    assert decision.execution_max_single_cap_pct == 0.08
+
+
+def test_execution_policy_disabled_blocks_extended_execution_readiness() -> None:
+    scanner = ArbitrageScannerService()
+    item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0].model_copy(update={"extended_size_up_risk_eligible": True})
+
+    decision = ExecutionSizingPolicyEvaluator.evaluate(
+        item,
+        ExecutionAccountInputs(
+            extended_size_up_enabled=False,
+            live_target_leverage=1.5,
+            live_max_allowed_leverage=2.0,
+            live_required_liquidation_buffer_pct=28.0,
+            live_remaining_total_cap_pct=0.2,
+            live_remaining_symbol_cap_pct=0.08,
+            live_remaining_long_exchange_cap_pct=0.1,
+            live_remaining_short_exchange_cap_pct=0.1,
+        ),
+    )
+    assert decision.extended_size_up_execution_ready is False
+    assert "extended_size_up_not_enabled_in_execution_policy" in decision.extended_size_up_execution_blockers
+
+
+def test_execution_policy_excessive_live_leverage_blocks_readiness() -> None:
+    scanner = ArbitrageScannerService()
+    item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0].model_copy(update={"extended_size_up_risk_eligible": True})
+
+    decision = ExecutionSizingPolicyEvaluator.evaluate(
+        item,
+        ExecutionAccountInputs(
+            extended_size_up_enabled=True,
+            live_target_leverage=2.1,
+            live_max_allowed_leverage=2.1,
+            live_required_liquidation_buffer_pct=28.0,
+            live_remaining_total_cap_pct=0.2,
+            live_remaining_symbol_cap_pct=0.08,
+            live_remaining_long_exchange_cap_pct=0.1,
+            live_remaining_short_exchange_cap_pct=0.1,
+        ),
+    )
+    assert decision.extended_size_up_execution_ready is False
+    assert "live_target_leverage_too_high" in decision.extended_size_up_execution_blockers
+    assert "live_max_allowed_leverage_too_high" in decision.extended_size_up_execution_blockers
+
+
+def test_execution_policy_insufficient_capacity_caps_execution_single_cap() -> None:
+    scanner = ArbitrageScannerService()
+    item = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0].model_copy(update={"extended_size_up_risk_eligible": True})
+
+    decision = ExecutionSizingPolicyEvaluator.evaluate(
+        item,
+        ExecutionAccountInputs(
+            extended_size_up_enabled=True,
+            live_target_leverage=1.5,
+            live_max_allowed_leverage=2.0,
+            live_required_liquidation_buffer_pct=28.0,
+            live_remaining_total_cap_pct=0.07,
+            live_remaining_symbol_cap_pct=0.08,
+            live_remaining_long_exchange_cap_pct=0.1,
+            live_remaining_short_exchange_cap_pct=0.1,
+        ),
+    )
+    assert decision.extended_size_up_execution_ready is False
+    assert decision.execution_max_single_cap_pct == 0.05
+    assert "insufficient_live_total_capacity_for_extended_size_up" in decision.extended_size_up_execution_blockers
 
 
 def test_exactly_two_soft_risks_can_be_normal_but_not_size_up() -> None:

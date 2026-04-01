@@ -5,6 +5,10 @@ from app.core.symbols import parse_symbols, supported_symbols
 from app.models.market import OpportunitiesResponse
 from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.data_quality_gate import MarketDataQualityGate
+from app.services.execution_sizing_policy import (
+    ExecutionSizingPolicyEvaluator,
+    build_default_execution_account_inputs,
+)
 from app.services.market_data import MarketDataService
 
 settings = get_settings()
@@ -71,10 +75,24 @@ async def get_opportunities(
 
     quality_result = quality_gate.evaluate(market_data.snapshots)
     accepted_snapshots = quality_result.accepted_snapshots
+    execution_account_inputs = build_default_execution_account_inputs()
+    opportunities = scanner.build_opportunities(accepted_snapshots)
+    opportunities = [
+        opportunity.model_copy(
+            update={
+                "extended_size_up_execution_ready": decision.extended_size_up_execution_ready,
+                "extended_size_up_execution_blockers": decision.extended_size_up_execution_blockers,
+                "execution_max_single_cap_pct": decision.execution_max_single_cap_pct,
+                "execution_cap_reasons": decision.execution_cap_reasons,
+            }
+        )
+        for opportunity in opportunities
+        for decision in [ExecutionSizingPolicyEvaluator.evaluate(opportunity, execution_account_inputs)]
+    ]
 
     response = OpportunitiesResponse(
         requested_symbols=market_data.requested_symbols,
-        opportunities=scanner.build_opportunities(accepted_snapshots),
+        opportunities=opportunities,
         snapshot_errors=market_data.errors,
     )
     return response.model_dump()
