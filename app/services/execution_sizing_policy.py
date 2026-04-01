@@ -38,9 +38,9 @@ class ExecutionPolicyProfile:
 
 PAPER_CONSERVATIVE_PROFILE = ExecutionPolicyProfile(
     extended_size_up_enabled=False,
-    live_target_leverage=1.2,
+    live_target_leverage=1.0,
     live_max_allowed_leverage=1.5,
-    live_required_liquidation_buffer_pct=35.0,
+    live_required_liquidation_buffer_pct=30.0,
     live_remaining_total_cap_pct=0.05,
     live_remaining_symbol_cap_pct=0.05,
     live_remaining_long_exchange_cap_pct=0.05,
@@ -48,14 +48,14 @@ PAPER_CONSERVATIVE_PROFILE = ExecutionPolicyProfile(
 )
 
 LIVE_CONSERVATIVE_PROFILE = ExecutionPolicyProfile(
-    extended_size_up_enabled=True,
-    live_target_leverage=1.4,
-    live_max_allowed_leverage=1.8,
-    live_required_liquidation_buffer_pct=30.0,
-    live_remaining_total_cap_pct=0.08,
-    live_remaining_symbol_cap_pct=0.08,
-    live_remaining_long_exchange_cap_pct=0.08,
-    live_remaining_short_exchange_cap_pct=0.08,
+    extended_size_up_enabled=False,
+    live_target_leverage=1.0,
+    live_max_allowed_leverage=1.5,
+    live_required_liquidation_buffer_pct=35.0,
+    live_remaining_total_cap_pct=0.05,
+    live_remaining_symbol_cap_pct=0.03,
+    live_remaining_long_exchange_cap_pct=0.05,
+    live_remaining_short_exchange_cap_pct=0.05,
 )
 
 

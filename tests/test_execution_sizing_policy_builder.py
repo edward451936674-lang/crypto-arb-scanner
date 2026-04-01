@@ -62,9 +62,9 @@ def test_resolve_execution_policy_profile_paper_conservative() -> None:
     profile = resolve_execution_policy_profile(Settings(execution_policy_profile="paper_conservative"))
 
     assert profile.extended_size_up_enabled is False
-    assert profile.live_target_leverage == 1.2
+    assert profile.live_target_leverage == 1.0
     assert profile.live_max_allowed_leverage == 1.5
-    assert profile.live_required_liquidation_buffer_pct == 35.0
+    assert profile.live_required_liquidation_buffer_pct == 30.0
     assert profile.live_remaining_total_cap_pct == 0.05
     assert profile.live_remaining_symbol_cap_pct == 0.05
     assert profile.live_remaining_long_exchange_cap_pct == 0.05
@@ -74,14 +74,14 @@ def test_resolve_execution_policy_profile_paper_conservative() -> None:
 def test_resolve_execution_policy_profile_live_conservative() -> None:
     profile = resolve_execution_policy_profile(Settings(execution_policy_profile="live_conservative"))
 
-    assert profile.extended_size_up_enabled is True
-    assert profile.live_target_leverage == 1.4
-    assert profile.live_max_allowed_leverage == 1.8
-    assert profile.live_required_liquidation_buffer_pct == 30.0
-    assert profile.live_remaining_total_cap_pct == 0.08
-    assert profile.live_remaining_symbol_cap_pct == 0.08
-    assert profile.live_remaining_long_exchange_cap_pct == 0.08
-    assert profile.live_remaining_short_exchange_cap_pct == 0.08
+    assert profile.extended_size_up_enabled is False
+    assert profile.live_target_leverage == 1.0
+    assert profile.live_max_allowed_leverage == 1.5
+    assert profile.live_required_liquidation_buffer_pct == 35.0
+    assert profile.live_remaining_total_cap_pct == 0.05
+    assert profile.live_remaining_symbol_cap_pct == 0.03
+    assert profile.live_remaining_long_exchange_cap_pct == 0.05
+    assert profile.live_remaining_short_exchange_cap_pct == 0.05
 
 
 def test_resolve_execution_policy_profile_dev_default_uses_flat_settings_values() -> None:
