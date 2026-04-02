@@ -241,3 +241,36 @@ class ReplayPreviewResponse(BaseModel):
     preview_count: int
     items: list[ReplayPreviewItem]
     snapshot_errors: list[ExchangeError] = Field(default_factory=list)
+
+
+class ReplayProfileComparisonResult(BaseModel):
+    profile_name: str
+    resolved_execution_extended_size_up_enabled: bool
+    resolved_execution_target_leverage: float
+    resolved_execution_max_allowed_leverage: float
+    resolved_execution_required_liquidation_buffer_pct: float
+    extended_size_up_execution_ready: bool
+    extended_size_up_execution_blockers: list[str] = Field(default_factory=list)
+    execution_max_single_cap_pct: float = 0.0
+    execution_cap_reasons: list[str] = Field(default_factory=list)
+    replay: OpportunityReplayResult
+
+
+class ReplayProfileCompareItem(BaseModel):
+    cluster_id: str | None = None
+    route_rank: int | None = None
+    symbol: str
+    long_exchange: str
+    short_exchange: str
+    execution_mode: str
+    opportunity_grade: str
+    profile_results: list[ReplayProfileComparisonResult]
+
+
+class ReplayProfileCompareResponse(BaseModel):
+    requested_symbols: list[str]
+    replay_assumptions: ReplayAssumptions
+    compared_profiles: list[str]
+    compare_count: int
+    items: list[ReplayProfileCompareItem]
+    snapshot_errors: list[ExchangeError] = Field(default_factory=list)
