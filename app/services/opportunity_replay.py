@@ -49,7 +49,9 @@ class OpportunityReplayService:
             symbol=opportunity.symbol,
             long_exchange=opportunity.long_exchange,
             short_exchange=opportunity.short_exchange,
-            entry_edge_bps=opportunity.price_spread_bps,
+            entry_price_edge_bps=opportunity.price_spread_bps,
+            entry_expected_funding_edge_bps=opportunity.expected_funding_edge_bps,
+            entry_net_edge_bps=opportunity.net_edge_bps,
             gross_price_edge_bps=gross_price_edge_bps,
             realized_funding_bps=realized_funding_bps,
             fees_bps=fees_bps,
@@ -58,7 +60,9 @@ class OpportunityReplayService:
             borrow_or_misc_cost_bps=assumptions.borrow_or_misc_cost_bps,
             net_realized_edge_bps=net_realized_edge_bps,
             holding_minutes=funding_window.holding_minutes,
-            funding_capture_fraction=min(long_fraction, short_fraction),
+            long_funding_capture_fraction=long_fraction,
+            short_funding_capture_fraction=short_fraction,
+            pair_funding_capture_fraction=min(long_fraction, short_fraction),
             replay_confidence_label=funding_window.confidence_label,
         )
 

@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 BPS_MULTIPLIER = 10_000
 
@@ -188,12 +188,20 @@ class ReplayAssumptions(BaseModel):
     latency_decay_bps: float
     borrow_or_misc_cost_bps: float = 0.0
 
+    @model_validator(mode="after")
+    def _validate_fixed_minutes_inputs(self) -> "ReplayAssumptions":
+        if self.holding_mode == "fixed_minutes" and (self.holding_minutes is None or self.holding_minutes <= 0):
+            raise ValueError("holding_minutes must be provided and > 0 when holding_mode='fixed_minutes'")
+        return self
+
 
 class OpportunityReplayResult(BaseModel):
     symbol: str
     long_exchange: str
     short_exchange: str
-    entry_edge_bps: float
+    entry_price_edge_bps: float
+    entry_expected_funding_edge_bps: float
+    entry_net_edge_bps: float
     gross_price_edge_bps: float
     realized_funding_bps: float
     fees_bps: float
@@ -202,5 +210,26 @@ class OpportunityReplayResult(BaseModel):
     borrow_or_misc_cost_bps: float
     net_realized_edge_bps: float
     holding_minutes: int
-    funding_capture_fraction: float
+    long_funding_capture_fraction: float
+    short_funding_capture_fraction: float
+    pair_funding_capture_fraction: float
     replay_confidence_label: str
+
+
+class ReplayPreviewItem(BaseModel):
+    cluster_id: str | None = None
+    route_rank: int | None = None
+    symbol: str
+    long_exchange: str
+    short_exchange: str
+    execution_mode: str
+    opportunity_grade: str
+    replay: OpportunityReplayResult
+
+
+class ReplayPreviewResponse(BaseModel):
+    requested_symbols: list[str]
+    replay_assumptions: ReplayAssumptions
+    preview_count: int
+    items: list[ReplayPreviewItem]
+    snapshot_errors: list[ExchangeError] = Field(default_factory=list)
