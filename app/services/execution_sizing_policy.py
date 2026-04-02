@@ -38,7 +38,7 @@ class ExecutionPolicyProfile:
 
 @dataclass(frozen=True)
 class ExecutionAccountState:
-    remaining_total_cap_pct: float = 0.0
+    remaining_total_cap_pct: float | None = None
     remaining_symbol_cap_pct_by_symbol: dict[str, float] = field(default_factory=dict)
     remaining_long_exchange_cap_pct_by_exchange: dict[str, float] = field(default_factory=dict)
     remaining_short_exchange_cap_pct_by_exchange: dict[str, float] = field(default_factory=dict)
@@ -98,6 +98,16 @@ def _cap_with_default(value: float, default_value: float) -> float:
     return value if value > 0.0 else default_value
 
 
+def _resolve_cap_with_override_and_baseline(
+    override_value: float | None,
+    baseline_value: float,
+    profile_default: float,
+) -> float:
+    if override_value is not None:
+        return max(0.0, override_value)
+    return _cap_with_default(baseline_value, profile_default)
+
+
 def build_execution_account_inputs(
     settings: Settings,
     opportunity: Opportunity,
@@ -118,38 +128,47 @@ def build_execution_account_inputs_for_profile(
     account_state: ExecutionAccountState | None = None,
 ) -> ExecutionAccountInputs:
     profile = resolve_execution_policy_profile_name(settings, profile_name)
+    baseline_total_remaining_cap_pct = opportunity.remaining_total_cap_pct
+    baseline_symbol_remaining_cap_pct = opportunity.remaining_symbol_cap_pct
+    baseline_long_exchange_remaining_cap_pct = opportunity.remaining_long_exchange_cap_pct
+    baseline_short_exchange_remaining_cap_pct = opportunity.remaining_short_exchange_cap_pct
+
     if account_state is not None:
-        total_remaining_cap_pct = _cap_with_default(
+        symbol_override = account_state.remaining_symbol_cap_pct_by_symbol.get(opportunity.symbol)
+        long_exchange_override = account_state.remaining_long_exchange_cap_pct_by_exchange.get(opportunity.long_exchange)
+        short_exchange_override = account_state.remaining_short_exchange_cap_pct_by_exchange.get(opportunity.short_exchange)
+        total_remaining_cap_pct = _resolve_cap_with_override_and_baseline(
             account_state.remaining_total_cap_pct,
+            baseline_total_remaining_cap_pct,
             profile.live_remaining_total_cap_pct,
         )
-        symbol_remaining_cap_pct = _cap_with_default(
-            account_state.remaining_symbol_cap_pct_by_symbol.get(opportunity.symbol, 0.0),
+        symbol_remaining_cap_pct = _resolve_cap_with_override_and_baseline(
+            symbol_override,
+            baseline_symbol_remaining_cap_pct,
             profile.live_remaining_symbol_cap_pct,
         )
-        long_exchange_remaining_cap_pct = _cap_with_default(
-            account_state.remaining_long_exchange_cap_pct_by_exchange.get(opportunity.long_exchange, 0.0),
+        long_exchange_remaining_cap_pct = _resolve_cap_with_override_and_baseline(
+            long_exchange_override,
+            baseline_long_exchange_remaining_cap_pct,
             profile.live_remaining_long_exchange_cap_pct,
         )
-        short_exchange_remaining_cap_pct = _cap_with_default(
-            account_state.remaining_short_exchange_cap_pct_by_exchange.get(opportunity.short_exchange, 0.0),
+        short_exchange_remaining_cap_pct = _resolve_cap_with_override_and_baseline(
+            short_exchange_override,
+            baseline_short_exchange_remaining_cap_pct,
             profile.live_remaining_short_exchange_cap_pct,
         )
     else:
-        total_remaining_cap_pct = _cap_with_default(
-            opportunity.remaining_total_cap_pct,
-            profile.live_remaining_total_cap_pct,
-        )
+        total_remaining_cap_pct = _cap_with_default(baseline_total_remaining_cap_pct, profile.live_remaining_total_cap_pct)
         symbol_remaining_cap_pct = _cap_with_default(
-            opportunity.remaining_symbol_cap_pct,
+            baseline_symbol_remaining_cap_pct,
             profile.live_remaining_symbol_cap_pct,
         )
         long_exchange_remaining_cap_pct = _cap_with_default(
-            opportunity.remaining_long_exchange_cap_pct,
+            baseline_long_exchange_remaining_cap_pct,
             profile.live_remaining_long_exchange_cap_pct,
         )
         short_exchange_remaining_cap_pct = _cap_with_default(
-            opportunity.remaining_short_exchange_cap_pct,
+            baseline_short_exchange_remaining_cap_pct,
             profile.live_remaining_short_exchange_cap_pct,
         )
 

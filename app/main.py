@@ -416,7 +416,7 @@ def _build_debug_execution_account_state_for_opportunity(
         return None
 
     return ExecutionAccountState(
-        remaining_total_cap_pct=account_remaining_total_cap_pct or 0.0,
+        remaining_total_cap_pct=account_remaining_total_cap_pct,
         remaining_symbol_cap_pct_by_symbol=(
             {opportunity.symbol: account_remaining_symbol_cap_pct}
             if account_remaining_symbol_cap_pct is not None
