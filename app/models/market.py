@@ -178,3 +178,29 @@ class OpportunitiesResponse(BaseModel):
     requested_symbols: list[str]
     opportunities: list[Opportunity]
     snapshot_errors: list[ExchangeError] = Field(default_factory=list)
+
+
+class ReplayAssumptions(BaseModel):
+    holding_mode: Literal["to_next_funding", "fixed_minutes"] = "to_next_funding"
+    holding_minutes: int | None = None
+    slippage_bps_per_leg: float
+    extra_exit_slippage_bps_per_leg: float
+    latency_decay_bps: float
+    borrow_or_misc_cost_bps: float = 0.0
+
+
+class OpportunityReplayResult(BaseModel):
+    symbol: str
+    long_exchange: str
+    short_exchange: str
+    entry_edge_bps: float
+    gross_price_edge_bps: float
+    realized_funding_bps: float
+    fees_bps: float
+    slippage_bps: float
+    latency_decay_bps: float
+    borrow_or_misc_cost_bps: float
+    net_realized_edge_bps: float
+    holding_minutes: int
+    funding_capture_fraction: float
+    replay_confidence_label: str
