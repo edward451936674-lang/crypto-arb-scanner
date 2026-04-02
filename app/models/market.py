@@ -148,6 +148,11 @@ class Opportunity(BaseModel):
     configured_target_leverage: float | None = None
     configured_max_allowed_leverage: float | None = None
     configured_min_required_liquidation_buffer_pct: float | None = None
+    active_execution_policy_profile: str | None = None
+    resolved_execution_extended_size_up_enabled: bool = False
+    resolved_execution_target_leverage: float | None = None
+    resolved_execution_max_allowed_leverage: float | None = None
+    resolved_execution_required_liquidation_buffer_pct: float | None = None
     extended_size_up_risk_eligible: bool = False
     extended_size_up_risk_blockers: list[str] = Field(default_factory=list)
     extended_size_up_execution_ready: bool = False

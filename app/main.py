@@ -91,13 +91,21 @@ async def get_opportunities(
 
     response = OpportunitiesResponse(
         requested_symbols=market_data.requested_symbols,
-        opportunities=_hydrate_execution_sizing_outputs(scanner.build_opportunities(accepted_snapshots)),
+        opportunities=_hydrate_execution_sizing_outputs(
+            scanner.build_opportunities(accepted_snapshots),
+            active_execution_policy_profile=settings.execution_policy_profile,
+        ),
         snapshot_errors=market_data.errors,
     )
     return response.model_dump()
 
 
-def _hydrate_execution_sizing_outputs(opportunities: list[Opportunity]) -> list[Opportunity]:
+def _hydrate_execution_sizing_outputs(
+    opportunities: list[Opportunity],
+    *,
+    active_execution_policy_profile: str,
+) -> list[Opportunity]:
+    resolved_execution_policy = resolve_execution_policy_profile(settings)
     hydrated = []
     for opportunity in opportunities:
         decision = ExecutionSizingPolicyEvaluator.evaluate(
@@ -111,6 +119,13 @@ def _hydrate_execution_sizing_outputs(opportunities: list[Opportunity]) -> list[
                     "extended_size_up_execution_blockers": decision.extended_size_up_execution_blockers,
                     "execution_max_single_cap_pct": decision.execution_max_single_cap_pct,
                     "execution_cap_reasons": decision.execution_cap_reasons,
+                    "active_execution_policy_profile": active_execution_policy_profile,
+                    "resolved_execution_extended_size_up_enabled": resolved_execution_policy.extended_size_up_enabled,
+                    "resolved_execution_target_leverage": resolved_execution_policy.live_target_leverage,
+                    "resolved_execution_max_allowed_leverage": resolved_execution_policy.live_max_allowed_leverage,
+                    "resolved_execution_required_liquidation_buffer_pct": (
+                        resolved_execution_policy.live_required_liquidation_buffer_pct
+                    ),
                 }
             )
         )
