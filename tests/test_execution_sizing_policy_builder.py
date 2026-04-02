@@ -3,7 +3,12 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import Settings
-from app.services.execution_sizing_policy import build_execution_account_inputs, resolve_execution_policy_profile
+from app.services.execution_sizing_policy import (
+    ExecutionAccountState,
+    ExecutionSizingPolicyEvaluator,
+    build_execution_account_inputs,
+    resolve_execution_policy_profile,
+)
 
 
 def test_build_execution_account_inputs_uses_settings_and_opportunity_caps() -> None:
@@ -129,3 +134,108 @@ def test_build_execution_account_inputs_uses_positive_opportunity_caps_over_prof
 def test_resolve_execution_policy_profile_unknown_profile_raises() -> None:
     with pytest.raises(ValueError, match="Unknown execution policy profile: unknown_profile"):
         resolve_execution_policy_profile(Settings(execution_policy_profile="unknown_profile"))
+
+
+def test_build_execution_account_inputs_account_state_overrides_total_cap() -> None:
+    settings = Settings(execution_policy_profile="dev_default", execution_live_remaining_total_cap_pct=0.2)
+    opportunity = SimpleNamespace(
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        remaining_total_cap_pct=0.11,
+        remaining_symbol_cap_pct=0.12,
+        remaining_long_exchange_cap_pct=0.13,
+        remaining_short_exchange_cap_pct=0.14,
+    )
+    account_state = ExecutionAccountState(remaining_total_cap_pct=0.03)
+
+    inputs = build_execution_account_inputs(settings, opportunity, account_state=account_state)
+
+    assert inputs.live_remaining_total_cap_pct == 0.03
+
+
+def test_build_execution_account_inputs_account_state_overrides_symbol_cap() -> None:
+    settings = Settings(
+        execution_policy_profile="dev_default",
+        execution_live_remaining_symbol_cap_pct=0.2,
+    )
+    opportunity = SimpleNamespace(
+        symbol="ETH",
+        long_exchange="binance",
+        short_exchange="okx",
+        remaining_total_cap_pct=0.11,
+        remaining_symbol_cap_pct=0.12,
+        remaining_long_exchange_cap_pct=0.13,
+        remaining_short_exchange_cap_pct=0.14,
+    )
+    account_state = ExecutionAccountState(
+        remaining_symbol_cap_pct_by_symbol={"ETH": 0.025},
+    )
+
+    inputs = build_execution_account_inputs(settings, opportunity, account_state=account_state)
+
+    assert inputs.live_remaining_symbol_cap_pct == 0.025
+
+
+def test_build_execution_account_inputs_account_state_overrides_long_short_exchange_caps() -> None:
+    settings = Settings(
+        execution_policy_profile="dev_default",
+        execution_live_remaining_long_exchange_cap_pct=0.2,
+        execution_live_remaining_short_exchange_cap_pct=0.2,
+    )
+    opportunity = SimpleNamespace(
+        symbol="SOL",
+        long_exchange="hyperliquid",
+        short_exchange="binance",
+        remaining_total_cap_pct=0.11,
+        remaining_symbol_cap_pct=0.12,
+        remaining_long_exchange_cap_pct=0.13,
+        remaining_short_exchange_cap_pct=0.14,
+    )
+    account_state = ExecutionAccountState(
+        remaining_long_exchange_cap_pct_by_exchange={"hyperliquid": 0.027},
+        remaining_short_exchange_cap_pct_by_exchange={"binance": 0.026},
+    )
+
+    inputs = build_execution_account_inputs(settings, opportunity, account_state=account_state)
+
+    assert inputs.live_remaining_long_exchange_cap_pct == 0.027
+    assert inputs.live_remaining_short_exchange_cap_pct == 0.026
+
+
+def test_execution_sizing_decision_reflects_account_state_caps() -> None:
+    settings = Settings(
+        execution_policy_profile="dev_default",
+        execution_extended_size_up_enabled=True,
+        execution_live_target_leverage=1.2,
+        execution_live_max_allowed_leverage=1.6,
+        execution_live_required_liquidation_buffer_pct=35.0,
+        execution_live_remaining_total_cap_pct=0.2,
+        execution_live_remaining_symbol_cap_pct=0.2,
+        execution_live_remaining_long_exchange_cap_pct=0.2,
+        execution_live_remaining_short_exchange_cap_pct=0.2,
+    )
+    opportunity = SimpleNamespace(
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        remaining_total_cap_pct=0.2,
+        remaining_symbol_cap_pct=0.2,
+        remaining_long_exchange_cap_pct=0.2,
+        remaining_short_exchange_cap_pct=0.2,
+        extended_size_up_risk_eligible=True,
+        execution_mode="size_up",
+    )
+    account_state = ExecutionAccountState(
+        remaining_total_cap_pct=0.031,
+        remaining_symbol_cap_pct_by_symbol={"BTC": 0.032},
+        remaining_long_exchange_cap_pct_by_exchange={"binance": 0.033},
+        remaining_short_exchange_cap_pct_by_exchange={"okx": 0.034},
+    )
+
+    account_inputs = build_execution_account_inputs(settings, opportunity, account_state=account_state)
+    decision = ExecutionSizingPolicyEvaluator.evaluate(opportunity, account_inputs)
+
+    assert decision.extended_size_up_execution_ready is False
+    assert "insufficient_live_total_capacity_for_extended_size_up" in decision.extended_size_up_execution_blockers
+    assert decision.execution_max_single_cap_pct == 0.031
