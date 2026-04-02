@@ -79,6 +79,8 @@ def test_replay_output_shape_has_required_fields() -> None:
     assert 0.0 <= replay.long_funding_capture_fraction <= 1.0
     assert 0.0 <= replay.short_funding_capture_fraction <= 1.0
     assert 0.0 <= replay.pair_funding_capture_fraction <= 1.0
+    assert replay.research_metrics.replay_cost_drag_bps >= 0.0
+    assert 0.0 <= replay.research_metrics.research_confidence_score <= 1.0
 
 
 
@@ -164,6 +166,83 @@ def test_replay_costs_reduce_net_edge() -> None:
     gross = replay.gross_price_edge_bps + replay.realized_funding_bps
     assert replay.net_realized_edge_bps < gross
     assert replay.slippage_bps == 6.0
+    assert replay.research_metrics.replay_cost_drag_bps == (
+        replay.fees_bps + replay.slippage_bps + replay.latency_decay_bps + replay.borrow_or_misc_cost_bps
+    )
+
+
+def test_edge_retention_rate_when_entry_net_edge_is_positive() -> None:
+    opportunity, long_snapshot, short_snapshot = _build_pair(next_funding_minutes=60)
+    replay = OpportunityReplayService().replay(
+        opportunity,
+        long_snapshot,
+        short_snapshot,
+        ReplayAssumptions(
+            holding_mode="to_next_funding",
+            slippage_bps_per_leg=0.0,
+            extra_exit_slippage_bps_per_leg=0.0,
+            latency_decay_bps=0.0,
+        ),
+    )
+
+    assert replay.entry_net_edge_bps > 0
+    assert replay.research_metrics.edge_retention_rate is not None
+    assert replay.research_metrics.edge_retention_rate == replay.net_realized_edge_bps / replay.entry_net_edge_bps
+
+
+def test_funding_capture_rate_when_entry_expected_funding_is_positive() -> None:
+    opportunity, long_snapshot, short_snapshot = _build_pair(next_funding_minutes=60)
+    replay = OpportunityReplayService().replay(
+        opportunity,
+        long_snapshot,
+        short_snapshot,
+        ReplayAssumptions(
+            holding_mode="to_next_funding",
+            slippage_bps_per_leg=0.0,
+            extra_exit_slippage_bps_per_leg=0.0,
+            latency_decay_bps=0.0,
+        ),
+    )
+
+    assert replay.entry_expected_funding_edge_bps > 0
+    assert replay.research_metrics.funding_capture_rate is not None
+    assert replay.research_metrics.funding_capture_rate == (
+        replay.realized_funding_bps / replay.entry_expected_funding_edge_bps
+    )
+
+
+def test_edge_retention_rate_safe_when_entry_net_edge_is_non_positive() -> None:
+    opportunity, long_snapshot, short_snapshot = _build_pair(next_funding_minutes=60)
+    replay = OpportunityReplayService().replay(
+        opportunity.model_copy(update={"net_edge_bps": 0.0}),
+        long_snapshot,
+        short_snapshot,
+        ReplayAssumptions(
+            holding_mode="to_next_funding",
+            slippage_bps_per_leg=0.0,
+            extra_exit_slippage_bps_per_leg=0.0,
+            latency_decay_bps=0.0,
+        ),
+    )
+
+    assert replay.research_metrics.edge_retention_rate is None
+
+
+def test_funding_capture_rate_safe_when_entry_expected_funding_is_non_positive() -> None:
+    opportunity, long_snapshot, short_snapshot = _build_pair(next_funding_minutes=60)
+    replay = OpportunityReplayService().replay(
+        opportunity.model_copy(update={"expected_funding_edge_bps": 0.0}),
+        long_snapshot,
+        short_snapshot,
+        ReplayAssumptions(
+            holding_mode="to_next_funding",
+            slippage_bps_per_leg=0.0,
+            extra_exit_slippage_bps_per_leg=0.0,
+            latency_decay_bps=0.0,
+        ),
+    )
+
+    assert replay.research_metrics.funding_capture_rate is None
 
 
 

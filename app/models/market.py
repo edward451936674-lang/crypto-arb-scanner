@@ -195,6 +195,13 @@ class ReplayAssumptions(BaseModel):
         return self
 
 
+class ReplayResearchMetrics(BaseModel):
+    edge_retention_rate: float | None = None
+    funding_capture_rate: float | None = None
+    replay_cost_drag_bps: float
+    research_confidence_score: float = Field(ge=0.0, le=1.0)
+
+
 class OpportunityReplayResult(BaseModel):
     symbol: str
     long_exchange: str
@@ -214,6 +221,7 @@ class OpportunityReplayResult(BaseModel):
     short_funding_capture_fraction: float
     pair_funding_capture_fraction: float
     replay_confidence_label: str
+    research_metrics: ReplayResearchMetrics
 
 
 class ReplayPreviewItem(BaseModel):
