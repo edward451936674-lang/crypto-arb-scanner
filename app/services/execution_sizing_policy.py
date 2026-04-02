@@ -59,8 +59,8 @@ LIVE_CONSERVATIVE_PROFILE = ExecutionPolicyProfile(
 )
 
 
-def resolve_execution_policy_profile(settings: Settings) -> ExecutionPolicyProfile:
-    if settings.execution_policy_profile == "dev_default":
+def resolve_execution_policy_profile_name(settings: Settings, profile_name: str) -> ExecutionPolicyProfile:
+    if profile_name == "dev_default":
         return ExecutionPolicyProfile(
             extended_size_up_enabled=settings.execution_extended_size_up_enabled,
             live_target_leverage=settings.execution_live_target_leverage,
@@ -76,10 +76,14 @@ def resolve_execution_policy_profile(settings: Settings) -> ExecutionPolicyProfi
         "paper_conservative": PAPER_CONSERVATIVE_PROFILE,
         "live_conservative": LIVE_CONSERVATIVE_PROFILE,
     }
-    if settings.execution_policy_profile in named_profiles:
-        return named_profiles[settings.execution_policy_profile]
+    if profile_name in named_profiles:
+        return named_profiles[profile_name]
 
-    raise ValueError(f"Unknown execution policy profile: {settings.execution_policy_profile}")
+    raise ValueError(f"Unknown execution policy profile: {profile_name}")
+
+
+def resolve_execution_policy_profile(settings: Settings) -> ExecutionPolicyProfile:
+    return resolve_execution_policy_profile_name(settings, settings.execution_policy_profile)
 
 
 def _cap_with_default(value: float, default_value: float) -> float:
@@ -87,7 +91,15 @@ def _cap_with_default(value: float, default_value: float) -> float:
 
 
 def build_execution_account_inputs(settings: Settings, opportunity: Opportunity) -> ExecutionAccountInputs:
-    profile = resolve_execution_policy_profile(settings)
+    return build_execution_account_inputs_for_profile(settings, opportunity, settings.execution_policy_profile)
+
+
+def build_execution_account_inputs_for_profile(
+    settings: Settings,
+    opportunity: Opportunity,
+    profile_name: str,
+) -> ExecutionAccountInputs:
+    profile = resolve_execution_policy_profile_name(settings, profile_name)
     return ExecutionAccountInputs(
         extended_size_up_enabled=profile.extended_size_up_enabled,
         live_target_leverage=profile.live_target_leverage,

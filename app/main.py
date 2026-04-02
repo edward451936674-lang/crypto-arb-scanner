@@ -10,6 +10,9 @@ from app.models.market import (
     OpportunitiesResponse,
     Opportunity,
     ReplayAssumptions,
+    ReplayProfileCompareItem,
+    ReplayProfileCompareResponse,
+    ReplayProfileComparisonResult,
     ReplayPreviewItem,
     ReplayPreviewResponse,
 )
@@ -18,6 +21,8 @@ from app.services.data_quality_gate import MarketDataQualityGate
 from app.services.execution_sizing_policy import (
     ExecutionSizingPolicyEvaluator,
     build_execution_account_inputs,
+    build_execution_account_inputs_for_profile,
+    resolve_execution_policy_profile_name,
     resolve_execution_policy_profile,
 )
 from app.services.market_data import MarketDataService
@@ -178,6 +183,105 @@ async def get_replay_preview(
     return response.model_dump()
 
 
+@app.get("/api/v1/replay-profile-compare")
+async def get_replay_profile_compare(
+    symbols: str | None = Query(
+        default=None,
+        description="Comma separated base symbols, e.g. BTC,ETH,SOL",
+    ),
+    limit: int = Query(default=5, ge=1, le=100),
+    profiles: str | None = Query(
+        default=None,
+        description="Comma separated execution policy profiles",
+    ),
+    holding_mode: Literal["to_next_funding", "fixed_minutes"] = Query(default="to_next_funding"),
+    holding_minutes: int | None = Query(default=None, ge=0),
+    slippage_bps_per_leg: float = Query(default=1.0, ge=0.0),
+    extra_exit_slippage_bps_per_leg: float = Query(default=0.5, ge=0.0),
+    latency_decay_bps: float = Query(default=0.2, ge=0.0),
+    borrow_or_misc_cost_bps: float = Query(default=0.0, ge=0.0),
+) -> dict[str, object]:
+    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
+    market_data_service = MarketDataService(settings)
+    scanner = ArbitrageScannerService()
+    quality_gate = MarketDataQualityGate()
+    replay_service = OpportunityReplayService()
+
+    try:
+        assumptions = ReplayAssumptions(
+            holding_mode=holding_mode,
+            holding_minutes=holding_minutes,
+            slippage_bps_per_leg=slippage_bps_per_leg,
+            extra_exit_slippage_bps_per_leg=extra_exit_slippage_bps_per_leg,
+            latency_decay_bps=latency_decay_bps,
+            borrow_or_misc_cost_bps=borrow_or_misc_cost_bps,
+        )
+        comparison_profiles = _parse_execution_profiles(profiles)
+        market_data = await market_data_service.fetch_snapshots(requested_symbols)
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    quality_result = quality_gate.evaluate(market_data.snapshots)
+    accepted_snapshots = quality_result.accepted_snapshots
+    opportunities = scanner.build_opportunities(accepted_snapshots)
+    snapshot_lookup = _snapshot_lookup(accepted_snapshots)
+
+    items: list[ReplayProfileCompareItem] = []
+    for opportunity in opportunities[:limit]:
+        long_snapshot = snapshot_lookup.get((opportunity.symbol, opportunity.long_exchange.lower()))
+        short_snapshot = snapshot_lookup.get((opportunity.symbol, opportunity.short_exchange.lower()))
+        if long_snapshot is None or short_snapshot is None:
+            continue
+
+        replay = replay_service.replay(opportunity, long_snapshot, short_snapshot, assumptions)
+        profile_results: list[ReplayProfileComparisonResult] = []
+        for profile_name in comparison_profiles:
+            resolved_execution_policy = resolve_execution_policy_profile_name(settings, profile_name)
+            decision = ExecutionSizingPolicyEvaluator.evaluate(
+                opportunity=opportunity,
+                account_inputs=build_execution_account_inputs_for_profile(settings, opportunity, profile_name),
+            )
+            profile_results.append(
+                ReplayProfileComparisonResult(
+                    profile_name=profile_name,
+                    resolved_execution_extended_size_up_enabled=resolved_execution_policy.extended_size_up_enabled,
+                    resolved_execution_target_leverage=resolved_execution_policy.live_target_leverage,
+                    resolved_execution_max_allowed_leverage=resolved_execution_policy.live_max_allowed_leverage,
+                    resolved_execution_required_liquidation_buffer_pct=(
+                        resolved_execution_policy.live_required_liquidation_buffer_pct
+                    ),
+                    extended_size_up_execution_ready=decision.extended_size_up_execution_ready,
+                    extended_size_up_execution_blockers=decision.extended_size_up_execution_blockers,
+                    execution_max_single_cap_pct=decision.execution_max_single_cap_pct,
+                    execution_cap_reasons=decision.execution_cap_reasons,
+                    replay=replay,
+                )
+            )
+
+        items.append(
+            ReplayProfileCompareItem(
+                cluster_id=opportunity.cluster_id,
+                route_rank=opportunity.route_rank,
+                symbol=opportunity.symbol,
+                long_exchange=opportunity.long_exchange,
+                short_exchange=opportunity.short_exchange,
+                execution_mode=opportunity.execution_mode,
+                opportunity_grade=opportunity.opportunity_grade,
+                profile_results=profile_results,
+            )
+        )
+
+    response = ReplayProfileCompareResponse(
+        requested_symbols=market_data.requested_symbols,
+        replay_assumptions=assumptions,
+        compared_profiles=comparison_profiles,
+        compare_count=len(items),
+        items=items,
+        snapshot_errors=market_data.errors,
+    )
+    return response.model_dump()
+
+
 def _hydrate_execution_sizing_outputs(
     opportunities: list[Opportunity],
     *,
@@ -215,3 +319,18 @@ def _snapshot_lookup(snapshots: list[MarketSnapshot]) -> dict[tuple[str, str], M
     for snapshot in snapshots:
         lookup[(snapshot.base_symbol.upper(), snapshot.exchange.lower())] = snapshot
     return lookup
+
+
+def _parse_execution_profiles(profiles: str | None) -> list[str]:
+    default_profiles = ["dev_default", "paper_conservative", "live_conservative"]
+    if not profiles:
+        return default_profiles
+
+    parsed = [item.strip().lower() for item in profiles.split(",") if item.strip()]
+    deduped = list(dict.fromkeys(parsed))
+    if not deduped:
+        raise ValueError("profiles must include at least one execution policy profile")
+
+    for profile_name in deduped:
+        resolve_execution_policy_profile_name(settings, profile_name)
+    return deduped

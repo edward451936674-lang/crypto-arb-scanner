@@ -4,8 +4,9 @@ import time
 import pytest
 from fastapi import HTTPException
 
-from app.main import get_opportunities, get_replay_preview
+from app.main import get_opportunities, get_replay_preview, get_replay_profile_compare
 from app.models.market import MarketDataResponse, MarketSnapshot
+from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.market_data import MarketDataService
 
 
@@ -273,3 +274,176 @@ def test_opportunities_api_behavior_remains_unchanged(monkeypatch) -> None:
     assert item["execution_mode"] in {"paper", "small_probe", "normal", "size_up"}
     assert item["suggested_position_pct"] >= item["final_position_pct"]
     assert "replay" not in item
+
+
+def test_replay_profile_compare_endpoint_response_shape(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.0002),
+                _snapshot("okx", 100.25, funding_rate=0.0002),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=5,
+            profiles=None,
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+        )
+    )
+
+    assert response["compare_count"] == 1
+    item = response["items"][0]
+    assert item["cluster_id"] == "BTC|binance|funding_capture"
+    assert item["route_rank"] == 1
+    assert item["symbol"] == "BTC"
+    assert item["long_exchange"] == "binance"
+    assert item["short_exchange"] == "okx"
+    assert "execution_mode" in item
+    assert "opportunity_grade" in item
+
+    profile_result = item["profile_results"][0]
+    assert "profile_name" in profile_result
+    assert "resolved_execution_extended_size_up_enabled" in profile_result
+    assert "resolved_execution_target_leverage" in profile_result
+    assert "resolved_execution_max_allowed_leverage" in profile_result
+    assert "resolved_execution_required_liquidation_buffer_pct" in profile_result
+    assert "extended_size_up_execution_ready" in profile_result
+    assert "extended_size_up_execution_blockers" in profile_result
+    assert "execution_max_single_cap_pct" in profile_result
+    assert "execution_cap_reasons" in profile_result
+    assert "replay" in profile_result
+
+
+def test_replay_profile_compare_defaults_to_three_profiles(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.0002),
+                _snapshot("okx", 100.25, funding_rate=0.0002),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=5,
+            profiles=None,
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+        )
+    )
+
+    assert response["compared_profiles"] == ["dev_default", "paper_conservative", "live_conservative"]
+    assert [result["profile_name"] for result in response["items"][0]["profile_results"]] == [
+        "dev_default",
+        "paper_conservative",
+        "live_conservative",
+    ]
+
+
+def test_replay_profile_compare_profiles_can_differ_on_execution_readiness_and_cap(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="latest_reported"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    original_build_opportunities = ArbitrageScannerService.build_opportunities
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        opportunities = original_build_opportunities(self, snapshots)
+        return [
+            opportunity.model_copy(
+                update={
+                    "remaining_total_cap_pct": 0.0,
+                    "remaining_symbol_cap_pct": 0.0,
+                    "remaining_long_exchange_cap_pct": 0.0,
+                    "remaining_short_exchange_cap_pct": 0.0,
+                }
+            )
+            for opportunity in opportunities
+        ]
+
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="dev_default,paper_conservative,live_conservative",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+        )
+    )
+
+    profile_results = {
+        result["profile_name"]: result
+        for result in response["items"][0]["profile_results"]
+    }
+
+    assert profile_results["dev_default"]["extended_size_up_execution_ready"] is False
+    assert profile_results["dev_default"]["execution_max_single_cap_pct"] == 0.05
+    assert profile_results["paper_conservative"]["extended_size_up_execution_ready"] is False
+    assert profile_results["paper_conservative"]["execution_max_single_cap_pct"] == 0.05
+    assert profile_results["live_conservative"]["extended_size_up_execution_ready"] is False
+    assert profile_results["live_conservative"]["execution_max_single_cap_pct"] == 0.03
+
+
+def test_replay_profile_compare_includes_replay_for_each_profile_result(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.0002),
+                _snapshot("okx", 100.25, funding_rate=0.0002),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles=None,
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+        )
+    )
+
+    for profile_result in response["items"][0]["profile_results"]:
+        replay = profile_result["replay"]
+        assert "entry_net_edge_bps" in replay
+        assert "net_realized_edge_bps" in replay
