@@ -36,6 +36,14 @@ class ExecutionPolicyProfile:
     live_remaining_short_exchange_cap_pct: float
 
 
+@dataclass(frozen=True)
+class ExecutionAccountState:
+    remaining_total_cap_pct: float = 0.0
+    remaining_symbol_cap_pct_by_symbol: dict[str, float] = field(default_factory=dict)
+    remaining_long_exchange_cap_pct_by_exchange: dict[str, float] = field(default_factory=dict)
+    remaining_short_exchange_cap_pct_by_exchange: dict[str, float] = field(default_factory=dict)
+
+
 PAPER_CONSERVATIVE_PROFILE = ExecutionPolicyProfile(
     extended_size_up_enabled=False,
     live_target_leverage=1.0,
@@ -90,35 +98,70 @@ def _cap_with_default(value: float, default_value: float) -> float:
     return value if value > 0.0 else default_value
 
 
-def build_execution_account_inputs(settings: Settings, opportunity: Opportunity) -> ExecutionAccountInputs:
-    return build_execution_account_inputs_for_profile(settings, opportunity, settings.execution_policy_profile)
+def build_execution_account_inputs(
+    settings: Settings,
+    opportunity: Opportunity,
+    account_state: ExecutionAccountState | None = None,
+) -> ExecutionAccountInputs:
+    return build_execution_account_inputs_for_profile(
+        settings,
+        opportunity,
+        settings.execution_policy_profile,
+        account_state,
+    )
 
 
 def build_execution_account_inputs_for_profile(
     settings: Settings,
     opportunity: Opportunity,
     profile_name: str,
+    account_state: ExecutionAccountState | None = None,
 ) -> ExecutionAccountInputs:
     profile = resolve_execution_policy_profile_name(settings, profile_name)
+    if account_state is not None:
+        total_remaining_cap_pct = _cap_with_default(
+            account_state.remaining_total_cap_pct,
+            profile.live_remaining_total_cap_pct,
+        )
+        symbol_remaining_cap_pct = _cap_with_default(
+            account_state.remaining_symbol_cap_pct_by_symbol.get(opportunity.symbol, 0.0),
+            profile.live_remaining_symbol_cap_pct,
+        )
+        long_exchange_remaining_cap_pct = _cap_with_default(
+            account_state.remaining_long_exchange_cap_pct_by_exchange.get(opportunity.long_exchange, 0.0),
+            profile.live_remaining_long_exchange_cap_pct,
+        )
+        short_exchange_remaining_cap_pct = _cap_with_default(
+            account_state.remaining_short_exchange_cap_pct_by_exchange.get(opportunity.short_exchange, 0.0),
+            profile.live_remaining_short_exchange_cap_pct,
+        )
+    else:
+        total_remaining_cap_pct = _cap_with_default(
+            opportunity.remaining_total_cap_pct,
+            profile.live_remaining_total_cap_pct,
+        )
+        symbol_remaining_cap_pct = _cap_with_default(
+            opportunity.remaining_symbol_cap_pct,
+            profile.live_remaining_symbol_cap_pct,
+        )
+        long_exchange_remaining_cap_pct = _cap_with_default(
+            opportunity.remaining_long_exchange_cap_pct,
+            profile.live_remaining_long_exchange_cap_pct,
+        )
+        short_exchange_remaining_cap_pct = _cap_with_default(
+            opportunity.remaining_short_exchange_cap_pct,
+            profile.live_remaining_short_exchange_cap_pct,
+        )
+
     return ExecutionAccountInputs(
         extended_size_up_enabled=profile.extended_size_up_enabled,
         live_target_leverage=profile.live_target_leverage,
         live_max_allowed_leverage=profile.live_max_allowed_leverage,
         live_required_liquidation_buffer_pct=profile.live_required_liquidation_buffer_pct,
-        live_remaining_total_cap_pct=_cap_with_default(
-            opportunity.remaining_total_cap_pct, profile.live_remaining_total_cap_pct
-        ),
-        live_remaining_symbol_cap_pct=_cap_with_default(
-            opportunity.remaining_symbol_cap_pct, profile.live_remaining_symbol_cap_pct
-        ),
-        live_remaining_long_exchange_cap_pct=_cap_with_default(
-            opportunity.remaining_long_exchange_cap_pct,
-            profile.live_remaining_long_exchange_cap_pct,
-        ),
-        live_remaining_short_exchange_cap_pct=_cap_with_default(
-            opportunity.remaining_short_exchange_cap_pct,
-            profile.live_remaining_short_exchange_cap_pct,
-        ),
+        live_remaining_total_cap_pct=total_remaining_cap_pct,
+        live_remaining_symbol_cap_pct=symbol_remaining_cap_pct,
+        live_remaining_long_exchange_cap_pct=long_exchange_remaining_cap_pct,
+        live_remaining_short_exchange_cap_pct=short_exchange_remaining_cap_pct,
     )
 
 
