@@ -4,6 +4,7 @@ import time
 import pytest
 from fastapi import HTTPException
 
+from app import main as main_module
 from app.main import get_opportunities, get_replay_preview, get_replay_profile_compare
 from app.models.market import MarketDataResponse, MarketSnapshot
 from app.services.arbitrage_scanner import ArbitrageScannerService
@@ -311,6 +312,12 @@ def test_replay_profile_compare_endpoint_response_shape(monkeypatch) -> None:
     assert item["short_exchange"] == "okx"
     assert "execution_mode" in item
     assert "opportunity_grade" in item
+    assert "normal_blockers" in item
+    assert "normal_promotion_reasons" in item
+    assert "size_up_blockers" in item
+    assert "size_up_promotion_reasons" in item
+    assert "extended_size_up_risk_eligible" in item
+    assert "extended_size_up_risk_blockers" in item
 
     profile_result = item["profile_results"][0]
     assert "profile_name" in profile_result
@@ -320,6 +327,10 @@ def test_replay_profile_compare_endpoint_response_shape(monkeypatch) -> None:
     assert "resolved_execution_required_liquidation_buffer_pct" in profile_result
     assert "extended_size_up_execution_ready" in profile_result
     assert "extended_size_up_execution_blockers" in profile_result
+    assert "why_not_explainability" in profile_result
+    assert "opportunity_blockers" in profile_result["why_not_explainability"]
+    assert "profile_policy_blockers" in profile_result["why_not_explainability"]
+    assert "execution_capacity_blockers" in profile_result["why_not_explainability"]
     assert "execution_max_single_cap_pct" in profile_result
     assert "execution_cap_reasons" in profile_result
     assert "replay" in profile_result
@@ -415,6 +426,79 @@ def test_replay_profile_compare_profiles_can_differ_on_execution_readiness_and_c
     assert profile_results["paper_conservative"]["execution_max_single_cap_pct"] == 0.05
     assert profile_results["live_conservative"]["extended_size_up_execution_ready"] is False
     assert profile_results["live_conservative"]["execution_max_single_cap_pct"] == 0.03
+
+
+def test_replay_profile_compare_why_not_groups_policy_and_capacity_blockers(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="latest_reported"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(main_module.settings, "execution_extended_size_up_enabled", True)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_total_cap_pct", 0.07)
+    original_build_opportunities = ArbitrageScannerService.build_opportunities
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        opportunities = original_build_opportunities(self, snapshots)
+        return [
+            opportunity.model_copy(
+                update={
+                    "execution_mode": "size_up",
+                    "extended_size_up_risk_eligible": True,
+                    "extended_size_up_risk_blockers": [],
+                    "remaining_total_cap_pct": 0.0,
+                    "remaining_symbol_cap_pct": 0.0,
+                    "remaining_long_exchange_cap_pct": 0.0,
+                    "remaining_short_exchange_cap_pct": 0.0,
+                }
+            )
+            for opportunity in opportunities
+        ]
+
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="dev_default,paper_conservative",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+        )
+    )
+
+    item = response["items"][0]
+    assert isinstance(item["normal_blockers"], list)
+    assert isinstance(item["normal_promotion_reasons"], list)
+    assert isinstance(item["size_up_blockers"], list)
+    assert isinstance(item["size_up_promotion_reasons"], list)
+    assert isinstance(item["extended_size_up_risk_eligible"], bool)
+    assert isinstance(item["extended_size_up_risk_blockers"], list)
+
+    profile_results = {result["profile_name"]: result for result in item["profile_results"]}
+    dev_result = profile_results["dev_default"]
+    paper_result = profile_results["paper_conservative"]
+
+    assert dev_result["why_not_explainability"]["profile_policy_blockers"] == []
+    assert "extended_size_up_not_enabled_in_execution_policy" in paper_result["why_not_explainability"][
+        "profile_policy_blockers"
+    ]
+    assert "insufficient_live_total_capacity_for_extended_size_up" in dev_result["why_not_explainability"][
+        "execution_capacity_blockers"
+    ]
+    assert paper_result["why_not_explainability"]["execution_capacity_blockers"] == []
+    assert "not_in_size_up_mode" not in dev_result["why_not_explainability"]["profile_policy_blockers"]
+    assert "not_in_size_up_mode" not in dev_result["why_not_explainability"]["execution_capacity_blockers"]
 
 
 def test_replay_profile_compare_includes_replay_for_each_profile_result(monkeypatch) -> None:

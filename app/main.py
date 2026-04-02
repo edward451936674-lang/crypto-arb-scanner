@@ -9,6 +9,7 @@ from app.models.market import (
     MarketSnapshot,
     OpportunitiesResponse,
     Opportunity,
+    ProfileWhyNotExplainability,
     ReplayAssumptions,
     ReplayProfileCompareItem,
     ReplayProfileCompareResponse,
@@ -19,6 +20,7 @@ from app.models.market import (
 from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.data_quality_gate import MarketDataQualityGate
 from app.services.execution_sizing_policy import (
+    ExecutionSizingDecision,
     ExecutionSizingPolicyEvaluator,
     build_execution_account_inputs,
     build_execution_account_inputs_for_profile,
@@ -34,6 +36,23 @@ app = FastAPI(
     version="0.1.0",
     description="Cross-exchange perpetual market data collector for arbitrage discovery.",
 )
+
+PROFILE_POLICY_BLOCKERS = {
+    "extended_size_up_not_enabled_in_execution_policy",
+    "live_target_leverage_too_high",
+    "live_max_allowed_leverage_too_high",
+    "live_liquidation_buffer_requirement_not_strict_enough",
+}
+EXECUTION_CAPACITY_BLOCKERS = {
+    "insufficient_live_total_capacity_for_extended_size_up",
+    "insufficient_live_symbol_capacity_for_extended_size_up",
+    "insufficient_live_long_exchange_capacity_for_extended_size_up",
+    "insufficient_live_short_exchange_capacity_for_extended_size_up",
+}
+OPPORTUNITY_EXECUTION_BLOCKERS = {
+    "not_in_size_up_mode",
+    "extended_size_up_risk_not_eligible",
+}
 
 
 @app.get("/healthz")
@@ -252,6 +271,7 @@ async def get_replay_profile_compare(
                     ),
                     extended_size_up_execution_ready=decision.extended_size_up_execution_ready,
                     extended_size_up_execution_blockers=decision.extended_size_up_execution_blockers,
+                    why_not_explainability=_build_profile_why_not_explainability(opportunity, decision),
                     execution_max_single_cap_pct=decision.execution_max_single_cap_pct,
                     execution_cap_reasons=decision.execution_cap_reasons,
                     replay=replay,
@@ -267,6 +287,12 @@ async def get_replay_profile_compare(
                 short_exchange=opportunity.short_exchange,
                 execution_mode=opportunity.execution_mode,
                 opportunity_grade=opportunity.opportunity_grade,
+                normal_blockers=opportunity.normal_blockers,
+                normal_promotion_reasons=opportunity.normal_promotion_reasons,
+                size_up_blockers=opportunity.size_up_blockers,
+                size_up_promotion_reasons=opportunity.size_up_promotion_reasons,
+                extended_size_up_risk_eligible=opportunity.extended_size_up_risk_eligible,
+                extended_size_up_risk_blockers=opportunity.extended_size_up_risk_blockers,
                 profile_results=profile_results,
             )
         )
@@ -334,3 +360,33 @@ def _parse_execution_profiles(profiles: str | None) -> list[str]:
     for profile_name in deduped:
         resolve_execution_policy_profile_name(settings, profile_name)
     return deduped
+
+
+def _build_profile_why_not_explainability(
+    opportunity: Opportunity,
+    decision: ExecutionSizingDecision,
+) -> ProfileWhyNotExplainability:
+    decision_blockers = decision.extended_size_up_execution_blockers
+    opportunity_blockers = list(
+        dict.fromkeys(
+            [
+                blocker
+                for blocker in decision_blockers
+                if blocker in OPPORTUNITY_EXECUTION_BLOCKERS
+            ]
+            + opportunity.size_up_blockers
+            + opportunity.extended_size_up_risk_blockers
+        )
+    )
+    profile_policy_blockers = [
+        blocker for blocker in decision_blockers if blocker in PROFILE_POLICY_BLOCKERS
+    ]
+    execution_capacity_blockers = [
+        blocker for blocker in decision_blockers if blocker in EXECUTION_CAPACITY_BLOCKERS
+    ]
+
+    return ProfileWhyNotExplainability(
+        opportunity_blockers=opportunity_blockers,
+        profile_policy_blockers=profile_policy_blockers,
+        execution_capacity_blockers=execution_capacity_blockers,
+    )

@@ -251,9 +251,16 @@ class ReplayProfileComparisonResult(BaseModel):
     resolved_execution_required_liquidation_buffer_pct: float
     extended_size_up_execution_ready: bool
     extended_size_up_execution_blockers: list[str] = Field(default_factory=list)
+    why_not_explainability: "ProfileWhyNotExplainability"
     execution_max_single_cap_pct: float = 0.0
     execution_cap_reasons: list[str] = Field(default_factory=list)
     replay: OpportunityReplayResult
+
+
+class ProfileWhyNotExplainability(BaseModel):
+    opportunity_blockers: list[str] = Field(default_factory=list)
+    profile_policy_blockers: list[str] = Field(default_factory=list)
+    execution_capacity_blockers: list[str] = Field(default_factory=list)
 
 
 class ReplayProfileCompareItem(BaseModel):
@@ -264,6 +271,12 @@ class ReplayProfileCompareItem(BaseModel):
     short_exchange: str
     execution_mode: str
     opportunity_grade: str
+    normal_blockers: list[str] = Field(default_factory=list)
+    normal_promotion_reasons: list[str] = Field(default_factory=list)
+    size_up_blockers: list[str] = Field(default_factory=list)
+    size_up_promotion_reasons: list[str] = Field(default_factory=list)
+    extended_size_up_risk_eligible: bool = False
+    extended_size_up_risk_blockers: list[str] = Field(default_factory=list)
     profile_results: list[ReplayProfileComparisonResult]
 
 
