@@ -428,6 +428,371 @@ def test_replay_profile_compare_profiles_can_differ_on_execution_readiness_and_c
     assert profile_results["live_conservative"]["execution_max_single_cap_pct"] == 0.03
 
 
+def test_replay_profile_compare_no_account_override_keeps_baseline_behavior(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="latest_reported"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    baseline = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="paper_conservative",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+        )
+    )
+    without_override = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="paper_conservative",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+            account_remaining_total_cap_pct=None,
+            account_remaining_symbol_cap_pct=None,
+            account_remaining_long_exchange_cap_pct=None,
+            account_remaining_short_exchange_cap_pct=None,
+        )
+    )
+
+    assert baseline["account_state_applied"] is False
+    assert without_override["account_state_applied"] is False
+    assert without_override["items"] == baseline["items"]
+
+
+def test_replay_profile_compare_total_cap_override_changes_execution_cap(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[_snapshot("binance", 100.0, funding_rate=-0.001), _snapshot("okx", 101.0, funding_rate=0.001)],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(main_module.settings, "execution_extended_size_up_enabled", True)
+    monkeypatch.setattr(main_module.settings, "execution_live_target_leverage", 1.0)
+    monkeypatch.setattr(main_module.settings, "execution_live_max_allowed_leverage", 1.5)
+    monkeypatch.setattr(main_module.settings, "execution_live_required_liquidation_buffer_pct", 35.0)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_total_cap_pct", 0.10)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_symbol_cap_pct", 0.10)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_long_exchange_cap_pct", 0.10)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_short_exchange_cap_pct", 0.10)
+
+    original_build_opportunities = ArbitrageScannerService.build_opportunities
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        opportunities = original_build_opportunities(self, snapshots)
+        return [
+            opportunity.model_copy(
+                update={
+                    "execution_mode": "size_up",
+                    "extended_size_up_risk_eligible": True,
+                    "extended_size_up_risk_blockers": [],
+                    "remaining_total_cap_pct": 0.0,
+                    "remaining_symbol_cap_pct": 0.0,
+                    "remaining_long_exchange_cap_pct": 0.0,
+                    "remaining_short_exchange_cap_pct": 0.0,
+                }
+            )
+            for opportunity in opportunities
+        ]
+
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="dev_default",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+            account_remaining_total_cap_pct=0.04,
+        )
+    )
+    result = response["items"][0]["profile_results"][0]
+    assert response["account_state_applied"] is True
+    assert result["execution_max_single_cap_pct"] == 0.04
+    assert result["extended_size_up_execution_ready"] is False
+
+
+@pytest.mark.parametrize(
+    ("override_field", "expected_reason"),
+    [
+        ("account_remaining_symbol_cap_pct", "insufficient_live_symbol_capacity_for_extended_size_up"),
+        ("account_remaining_long_exchange_cap_pct", "insufficient_live_long_exchange_capacity_for_extended_size_up"),
+        ("account_remaining_short_exchange_cap_pct", "insufficient_live_short_exchange_capacity_for_extended_size_up"),
+    ],
+)
+def test_replay_profile_compare_symbol_or_exchange_override_changes_execution_cap_and_readiness(
+    monkeypatch,
+    override_field: str,
+    expected_reason: str,
+) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[_snapshot("binance", 100.0, funding_rate=-0.001), _snapshot("okx", 101.0, funding_rate=0.001)],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(main_module.settings, "execution_extended_size_up_enabled", True)
+    monkeypatch.setattr(main_module.settings, "execution_live_target_leverage", 1.0)
+    monkeypatch.setattr(main_module.settings, "execution_live_max_allowed_leverage", 1.5)
+    monkeypatch.setattr(main_module.settings, "execution_live_required_liquidation_buffer_pct", 35.0)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_total_cap_pct", 0.10)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_symbol_cap_pct", 0.10)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_long_exchange_cap_pct", 0.10)
+    monkeypatch.setattr(main_module.settings, "execution_live_remaining_short_exchange_cap_pct", 0.10)
+
+    original_build_opportunities = ArbitrageScannerService.build_opportunities
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        opportunities = original_build_opportunities(self, snapshots)
+        return [
+            opportunity.model_copy(
+                update={
+                    "execution_mode": "size_up",
+                    "extended_size_up_risk_eligible": True,
+                    "extended_size_up_risk_blockers": [],
+                    "remaining_total_cap_pct": 0.0,
+                    "remaining_symbol_cap_pct": 0.0,
+                    "remaining_long_exchange_cap_pct": 0.0,
+                    "remaining_short_exchange_cap_pct": 0.0,
+                }
+            )
+            for opportunity in opportunities
+        ]
+
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="dev_default",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+            **{override_field: 0.04},
+        )
+    )
+    result = response["items"][0]["profile_results"][0]
+    assert result["execution_max_single_cap_pct"] == 0.04
+    assert result["extended_size_up_execution_ready"] is False
+    assert expected_reason in result["extended_size_up_execution_blockers"]
+
+
+def test_replay_profile_compare_total_override_preserves_symbol_and_exchange_baseline(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[_snapshot("binance", 100.0, funding_rate=-0.001), _snapshot("okx", 101.0, funding_rate=0.001)],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(main_module.settings, "execution_extended_size_up_enabled", True)
+
+    original_build_opportunities = ArbitrageScannerService.build_opportunities
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        opportunities = original_build_opportunities(self, snapshots)
+        return [
+            opportunity.model_copy(
+                update={
+                    "execution_mode": "size_up",
+                    "extended_size_up_risk_eligible": True,
+                    "extended_size_up_risk_blockers": [],
+                    "remaining_total_cap_pct": 0.09,
+                    "remaining_symbol_cap_pct": 0.11,
+                    "remaining_long_exchange_cap_pct": 0.12,
+                    "remaining_short_exchange_cap_pct": 0.13,
+                }
+            )
+            for opportunity in opportunities
+        ]
+
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="dev_default",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+            account_remaining_total_cap_pct=0.04,
+        )
+    )
+    result = response["items"][0]["profile_results"][0]
+    assert result["execution_max_single_cap_pct"] == 0.04
+    assert "insufficient_live_total_capacity_for_extended_size_up" in result["extended_size_up_execution_blockers"]
+    assert "insufficient_live_symbol_capacity_for_extended_size_up" not in result["extended_size_up_execution_blockers"]
+    assert "insufficient_live_long_exchange_capacity_for_extended_size_up" not in result[
+        "extended_size_up_execution_blockers"
+    ]
+    assert "insufficient_live_short_exchange_capacity_for_extended_size_up" not in result[
+        "extended_size_up_execution_blockers"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("override_kwarg", "expected_blocker"),
+    [
+        ({"account_remaining_symbol_cap_pct": 0.04}, "insufficient_live_symbol_capacity_for_extended_size_up"),
+        (
+            {"account_remaining_long_exchange_cap_pct": 0.04},
+            "insufficient_live_long_exchange_capacity_for_extended_size_up",
+        ),
+        (
+            {"account_remaining_short_exchange_cap_pct": 0.04},
+            "insufficient_live_short_exchange_capacity_for_extended_size_up",
+        ),
+    ],
+)
+def test_replay_profile_compare_single_non_total_override_preserves_other_baselines(
+    monkeypatch,
+    override_kwarg: dict[str, float],
+    expected_blocker: str,
+) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[_snapshot("binance", 100.0, funding_rate=-0.001), _snapshot("okx", 101.0, funding_rate=0.001)],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(main_module.settings, "execution_extended_size_up_enabled", True)
+
+    original_build_opportunities = ArbitrageScannerService.build_opportunities
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        opportunities = original_build_opportunities(self, snapshots)
+        return [
+            opportunity.model_copy(
+                update={
+                    "execution_mode": "size_up",
+                    "extended_size_up_risk_eligible": True,
+                    "extended_size_up_risk_blockers": [],
+                    "remaining_total_cap_pct": 0.09,
+                    "remaining_symbol_cap_pct": 0.11,
+                    "remaining_long_exchange_cap_pct": 0.12,
+                    "remaining_short_exchange_cap_pct": 0.13,
+                }
+            )
+            for opportunity in opportunities
+        ]
+
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="dev_default",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+            **override_kwarg,
+        )
+    )
+    result = response["items"][0]["profile_results"][0]
+    assert result["execution_max_single_cap_pct"] == 0.04
+    assert expected_blocker in result["extended_size_up_execution_blockers"]
+    for blocker in {
+        "insufficient_live_total_capacity_for_extended_size_up",
+        "insufficient_live_symbol_capacity_for_extended_size_up",
+        "insufficient_live_long_exchange_capacity_for_extended_size_up",
+        "insufficient_live_short_exchange_capacity_for_extended_size_up",
+    } - {expected_blocker}:
+        assert blocker not in result["extended_size_up_execution_blockers"]
+
+
+def test_replay_profile_compare_explicit_zero_override_is_honored(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[_snapshot("binance", 100.0, funding_rate=-0.001), _snapshot("okx", 101.0, funding_rate=0.001)],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(main_module.settings, "execution_extended_size_up_enabled", True)
+
+    original_build_opportunities = ArbitrageScannerService.build_opportunities
+
+    def fake_build_opportunities(self: ArbitrageScannerService, snapshots: list[MarketSnapshot]):
+        opportunities = original_build_opportunities(self, snapshots)
+        return [
+            opportunity.model_copy(
+                update={
+                    "execution_mode": "size_up",
+                    "extended_size_up_risk_eligible": True,
+                    "extended_size_up_risk_blockers": [],
+                    "remaining_total_cap_pct": 0.09,
+                    "remaining_symbol_cap_pct": 0.11,
+                    "remaining_long_exchange_cap_pct": 0.12,
+                    "remaining_short_exchange_cap_pct": 0.13,
+                }
+            )
+            for opportunity in opportunities
+        ]
+
+    monkeypatch.setattr(ArbitrageScannerService, "build_opportunities", fake_build_opportunities)
+
+    response = asyncio.run(
+        get_replay_profile_compare(
+            symbols="BTC",
+            limit=1,
+            profiles="dev_default",
+            holding_mode="to_next_funding",
+            holding_minutes=None,
+            slippage_bps_per_leg=1.0,
+            extra_exit_slippage_bps_per_leg=0.5,
+            latency_decay_bps=0.2,
+            borrow_or_misc_cost_bps=0.0,
+            account_remaining_total_cap_pct=0.0,
+        )
+    )
+    result = response["items"][0]["profile_results"][0]
+    assert response["account_state_applied"] is True
+    assert result["execution_max_single_cap_pct"] == 0.0
+    assert "insufficient_live_total_capacity_for_extended_size_up" in result["extended_size_up_execution_blockers"]
+
+
 def test_replay_profile_compare_why_not_groups_policy_and_capacity_blockers(monkeypatch) -> None:
     async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
         return MarketDataResponse(

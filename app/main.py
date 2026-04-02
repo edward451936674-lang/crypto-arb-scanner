@@ -20,6 +20,7 @@ from app.models.market import (
 from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.data_quality_gate import MarketDataQualityGate
 from app.services.execution_sizing_policy import (
+    ExecutionAccountState,
     ExecutionSizingDecision,
     ExecutionSizingPolicyEvaluator,
     build_execution_account_inputs,
@@ -219,6 +220,10 @@ async def get_replay_profile_compare(
     extra_exit_slippage_bps_per_leg: float = Query(default=0.5, ge=0.0),
     latency_decay_bps: float = Query(default=0.2, ge=0.0),
     borrow_or_misc_cost_bps: float = Query(default=0.0, ge=0.0),
+    account_remaining_total_cap_pct: float | None = None,
+    account_remaining_symbol_cap_pct: float | None = None,
+    account_remaining_long_exchange_cap_pct: float | None = None,
+    account_remaining_short_exchange_cap_pct: float | None = None,
 ) -> dict[str, object]:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
     market_data_service = MarketDataService(settings)
@@ -244,7 +249,6 @@ async def get_replay_profile_compare(
     accepted_snapshots = quality_result.accepted_snapshots
     opportunities = scanner.build_opportunities(accepted_snapshots)
     snapshot_lookup = _snapshot_lookup(accepted_snapshots)
-
     items: list[ReplayProfileCompareItem] = []
     for opportunity in opportunities[:limit]:
         long_snapshot = snapshot_lookup.get((opportunity.symbol, opportunity.long_exchange.lower()))
@@ -253,12 +257,24 @@ async def get_replay_profile_compare(
             continue
 
         replay = replay_service.replay(opportunity, long_snapshot, short_snapshot, assumptions)
+        debug_account_state = _build_debug_execution_account_state_for_opportunity(
+            opportunity=opportunity,
+            account_remaining_total_cap_pct=account_remaining_total_cap_pct,
+            account_remaining_symbol_cap_pct=account_remaining_symbol_cap_pct,
+            account_remaining_long_exchange_cap_pct=account_remaining_long_exchange_cap_pct,
+            account_remaining_short_exchange_cap_pct=account_remaining_short_exchange_cap_pct,
+        )
         profile_results: list[ReplayProfileComparisonResult] = []
         for profile_name in comparison_profiles:
             resolved_execution_policy = resolve_execution_policy_profile_name(settings, profile_name)
             decision = ExecutionSizingPolicyEvaluator.evaluate(
                 opportunity=opportunity,
-                account_inputs=build_execution_account_inputs_for_profile(settings, opportunity, profile_name),
+                account_inputs=build_execution_account_inputs_for_profile(
+                    settings,
+                    opportunity,
+                    profile_name,
+                    account_state=debug_account_state,
+                ),
             )
             profile_results.append(
                 ReplayProfileComparisonResult(
@@ -302,6 +318,12 @@ async def get_replay_profile_compare(
         replay_assumptions=assumptions,
         compared_profiles=comparison_profiles,
         compare_count=len(items),
+        account_state_applied=_debug_account_state_requested(
+            account_remaining_total_cap_pct=account_remaining_total_cap_pct,
+            account_remaining_symbol_cap_pct=account_remaining_symbol_cap_pct,
+            account_remaining_long_exchange_cap_pct=account_remaining_long_exchange_cap_pct,
+            account_remaining_short_exchange_cap_pct=account_remaining_short_exchange_cap_pct,
+        ),
         items=items,
         snapshot_errors=market_data.errors,
     )
@@ -360,6 +382,57 @@ def _parse_execution_profiles(profiles: str | None) -> list[str]:
     for profile_name in deduped:
         resolve_execution_policy_profile_name(settings, profile_name)
     return deduped
+
+
+def _debug_account_state_requested(
+    *,
+    account_remaining_total_cap_pct: float | None,
+    account_remaining_symbol_cap_pct: float | None,
+    account_remaining_long_exchange_cap_pct: float | None,
+    account_remaining_short_exchange_cap_pct: float | None,
+) -> bool:
+    return (
+        account_remaining_total_cap_pct is not None
+        or account_remaining_symbol_cap_pct is not None
+        or account_remaining_long_exchange_cap_pct is not None
+        or account_remaining_short_exchange_cap_pct is not None
+    )
+
+
+def _build_debug_execution_account_state_for_opportunity(
+    *,
+    opportunity: Opportunity,
+    account_remaining_total_cap_pct: float | None,
+    account_remaining_symbol_cap_pct: float | None,
+    account_remaining_long_exchange_cap_pct: float | None,
+    account_remaining_short_exchange_cap_pct: float | None,
+) -> ExecutionAccountState | None:
+    if not _debug_account_state_requested(
+        account_remaining_total_cap_pct=account_remaining_total_cap_pct,
+        account_remaining_symbol_cap_pct=account_remaining_symbol_cap_pct,
+        account_remaining_long_exchange_cap_pct=account_remaining_long_exchange_cap_pct,
+        account_remaining_short_exchange_cap_pct=account_remaining_short_exchange_cap_pct,
+    ):
+        return None
+
+    return ExecutionAccountState(
+        remaining_total_cap_pct=account_remaining_total_cap_pct,
+        remaining_symbol_cap_pct_by_symbol=(
+            {opportunity.symbol: account_remaining_symbol_cap_pct}
+            if account_remaining_symbol_cap_pct is not None
+            else {}
+        ),
+        remaining_long_exchange_cap_pct_by_exchange=(
+            {opportunity.long_exchange: account_remaining_long_exchange_cap_pct}
+            if account_remaining_long_exchange_cap_pct is not None
+            else {}
+        ),
+        remaining_short_exchange_cap_pct_by_exchange=(
+            {opportunity.short_exchange: account_remaining_short_exchange_cap_pct}
+            if account_remaining_short_exchange_cap_pct is not None
+            else {}
+        ),
+    )
 
 
 def _build_profile_why_not_explainability(
