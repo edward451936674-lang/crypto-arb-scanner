@@ -1,6 +1,9 @@
 import asyncio
 import time
 
+import pytest
+from fastapi import HTTPException
+
 from app.main import get_opportunities, get_replay_preview
 from app.models.market import MarketDataResponse, MarketSnapshot
 from app.services.market_data import MarketDataService
@@ -137,6 +140,52 @@ def test_replay_preview_fixed_minutes_mode(monkeypatch) -> None:
     replay = response["items"][0]["replay"]
     assert replay["holding_minutes"] == 120
     assert round(replay["pair_funding_capture_fraction"], 6) == round(120 / (8 * 60), 6)
+
+
+def test_replay_preview_fixed_minutes_requires_holding_minutes(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(requested_symbols=symbols, snapshots=[], errors=[])
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            get_replay_preview(
+                symbols="BTC",
+                limit=5,
+                holding_mode="fixed_minutes",
+                holding_minutes=None,
+                slippage_bps_per_leg=1.0,
+                extra_exit_slippage_bps_per_leg=0.5,
+                latency_decay_bps=0.2,
+                borrow_or_misc_cost_bps=0.0,
+            )
+        )
+
+    assert exc.value.status_code == 400
+
+
+def test_replay_preview_fixed_minutes_rejects_zero_holding_minutes(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(requested_symbols=symbols, snapshots=[], errors=[])
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            get_replay_preview(
+                symbols="BTC",
+                limit=5,
+                holding_mode="fixed_minutes",
+                holding_minutes=0,
+                slippage_bps_per_leg=1.0,
+                extra_exit_slippage_bps_per_leg=0.5,
+                latency_decay_bps=0.2,
+                borrow_or_misc_cost_bps=0.0,
+            )
+        )
+
+    assert exc.value.status_code == 400
 
 
 def test_replay_preview_to_next_funding_mode(monkeypatch) -> None:

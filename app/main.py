@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import ValidationError
 
@@ -116,7 +118,7 @@ async def get_replay_preview(
         description="Comma separated base symbols, e.g. BTC,ETH,SOL",
     ),
     limit: int = Query(default=5, ge=1, le=100),
-    holding_mode: str = Query(default="to_next_funding"),
+    holding_mode: Literal["to_next_funding", "fixed_minutes"] = Query(default="to_next_funding"),
     holding_minutes: int | None = Query(default=None, ge=0),
     slippage_bps_per_leg: float = Query(default=1.0, ge=0.0),
     extra_exit_slippage_bps_per_leg: float = Query(default=0.5, ge=0.0),

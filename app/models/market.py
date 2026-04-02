@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 BPS_MULTIPLIER = 10_000
 
@@ -187,6 +187,12 @@ class ReplayAssumptions(BaseModel):
     extra_exit_slippage_bps_per_leg: float
     latency_decay_bps: float
     borrow_or_misc_cost_bps: float = 0.0
+
+    @model_validator(mode="after")
+    def _validate_fixed_minutes_inputs(self) -> "ReplayAssumptions":
+        if self.holding_mode == "fixed_minutes" and (self.holding_minutes is None or self.holding_minutes <= 0):
+            raise ValueError("holding_minutes must be provided and > 0 when holding_mode='fixed_minutes'")
+        return self
 
 
 class OpportunityReplayResult(BaseModel):
