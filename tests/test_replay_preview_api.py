@@ -81,6 +81,11 @@ def test_replay_preview_endpoint_returns_expected_shape(monkeypatch) -> None:
     assert "long_funding_capture_fraction" in replay
     assert "short_funding_capture_fraction" in replay
     assert "pair_funding_capture_fraction" in replay
+    assert "research_metrics" in replay
+    assert "edge_retention_rate" in replay["research_metrics"]
+    assert "funding_capture_rate" in replay["research_metrics"]
+    assert "replay_cost_drag_bps" in replay["research_metrics"]
+    assert "research_confidence_score" in replay["research_metrics"]
 
 
 def test_replay_preview_top_n_limiting(monkeypatch) -> None:
