@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+from app.core.config import Settings
 from app.main import get_opportunities
 from app.models.market import MarketDataResponse, MarketSnapshot
 from app.services.arbitrage_scanner import ArbitrageScannerService, EXECUTION_RISK_CONFIGS, ExecutionRiskConfig
@@ -247,6 +248,75 @@ def _assert_execution_overlay_fields(item: dict) -> None:
     assert "extended_size_up_execution_blockers" in item
     assert "execution_max_single_cap_pct" in item
     assert "execution_cap_reasons" in item
+    assert "active_execution_policy_profile" in item
+    assert "resolved_execution_extended_size_up_enabled" in item
+    assert "resolved_execution_target_leverage" in item
+    assert "resolved_execution_max_allowed_leverage" in item
+    assert "resolved_execution_required_liquidation_buffer_pct" in item
+
+
+def test_get_opportunities_exposes_resolved_execution_profile_fields(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+
+    profile_cases = [
+        (
+            "dev_default",
+            Settings(
+                execution_policy_profile="dev_default",
+                execution_extended_size_up_enabled=True,
+                execution_live_target_leverage=1.4,
+                execution_live_max_allowed_leverage=1.8,
+                execution_live_required_liquidation_buffer_pct=31.0,
+            ),
+            {
+                "active_execution_policy_profile": "dev_default",
+                "resolved_execution_extended_size_up_enabled": True,
+                "resolved_execution_target_leverage": 1.4,
+                "resolved_execution_max_allowed_leverage": 1.8,
+                "resolved_execution_required_liquidation_buffer_pct": 31.0,
+            },
+        ),
+        (
+            "paper_conservative",
+            Settings(execution_policy_profile="paper_conservative"),
+            {
+                "active_execution_policy_profile": "paper_conservative",
+                "resolved_execution_extended_size_up_enabled": False,
+                "resolved_execution_target_leverage": 1.0,
+                "resolved_execution_max_allowed_leverage": 1.5,
+                "resolved_execution_required_liquidation_buffer_pct": 30.0,
+            },
+        ),
+        (
+            "live_conservative",
+            Settings(execution_policy_profile="live_conservative"),
+            {
+                "active_execution_policy_profile": "live_conservative",
+                "resolved_execution_extended_size_up_enabled": False,
+                "resolved_execution_target_leverage": 1.0,
+                "resolved_execution_max_allowed_leverage": 1.5,
+                "resolved_execution_required_liquidation_buffer_pct": 35.0,
+            },
+        ),
+    ]
+
+    for profile_name, profile_settings, expected in profile_cases:
+        monkeypatch.setattr("app.main.settings", profile_settings)
+        response = asyncio.run(get_opportunities(symbols="BTC"))
+        assert len(response["opportunities"]) == 1, profile_name
+        item = response["opportunities"][0]
+        for key, value in expected.items():
+            assert item[key] == value, f"{profile_name}: expected {key}={value}, got {item[key]}"
 
 
 def test_get_opportunities_controlled_strong_size_up_candidate(monkeypatch) -> None:
