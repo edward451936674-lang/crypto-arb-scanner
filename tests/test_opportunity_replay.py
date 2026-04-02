@@ -73,8 +73,12 @@ def test_replay_output_shape_has_required_fields() -> None:
     assert replay.symbol == "BTC"
     assert replay.long_exchange == "binance"
     assert replay.short_exchange == "okx"
+    assert replay.entry_price_edge_bps == replay.gross_price_edge_bps
+    assert replay.entry_net_edge_bps == opportunity.net_edge_bps
     assert isinstance(replay.net_realized_edge_bps, float)
-    assert 0.0 <= replay.funding_capture_fraction <= 1.0
+    assert 0.0 <= replay.long_funding_capture_fraction <= 1.0
+    assert 0.0 <= replay.short_funding_capture_fraction <= 1.0
+    assert 0.0 <= replay.pair_funding_capture_fraction <= 1.0
 
 
 
@@ -94,7 +98,9 @@ def test_funding_capture_respects_8h_period() -> None:
     )
 
     assert replay.holding_minutes == 60
-    assert round(replay.funding_capture_fraction, 6) == round(60 / (8 * 60), 6)
+    assert round(replay.long_funding_capture_fraction, 6) == round(60 / (8 * 60), 6)
+    assert round(replay.short_funding_capture_fraction, 6) == round(60 / (8 * 60), 6)
+    assert round(replay.pair_funding_capture_fraction, 6) == round(60 / (8 * 60), 6)
 
 
 
@@ -114,7 +120,9 @@ def test_funding_capture_respects_4h_period() -> None:
     )
 
     assert replay.holding_minutes == 60
-    assert round(replay.funding_capture_fraction, 6) == round(60 / (4 * 60), 6)
+    assert round(replay.long_funding_capture_fraction, 6) == round(60 / (4 * 60), 6)
+    assert round(replay.short_funding_capture_fraction, 6) == round(60 / (4 * 60), 6)
+    assert round(replay.pair_funding_capture_fraction, 6) == round(60 / (4 * 60), 6)
 
 
 
@@ -135,7 +143,9 @@ def test_fixed_minutes_holding_mode_uses_explicit_window() -> None:
     )
 
     assert replay.holding_minutes == 120
-    assert round(replay.funding_capture_fraction, 6) == round(120 / (8 * 60), 6)
+    assert round(replay.long_funding_capture_fraction, 6) == round(120 / (8 * 60), 6)
+    assert round(replay.short_funding_capture_fraction, 6) == round(120 / (8 * 60), 6)
+    assert round(replay.pair_funding_capture_fraction, 6) == round(120 / (8 * 60), 6)
 
 
 
