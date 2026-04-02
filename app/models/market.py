@@ -285,5 +285,6 @@ class ReplayProfileCompareResponse(BaseModel):
     replay_assumptions: ReplayAssumptions
     compared_profiles: list[str]
     compare_count: int
+    account_state_applied: bool = False
     items: list[ReplayProfileCompareItem]
     snapshot_errors: list[ExchangeError] = Field(default_factory=list)
