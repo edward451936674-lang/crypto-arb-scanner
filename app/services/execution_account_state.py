@@ -23,8 +23,55 @@ class FixedExecutionAccountStateProvider(ExecutionAccountStateProvider):
         return self._account_state
 
 
+def resolve_execution_account_state_provider_name(settings: Settings) -> str:
+    return str(getattr(settings, "execution_account_state_provider", "null")).strip().lower()
+
+
+def _build_fixed_fixture_execution_account_state(settings: Settings) -> ExecutionAccountState:
+    remaining_symbol_cap_pct_by_symbol: dict[str, float] = {}
+    if settings.execution_account_state_fixture_remaining_symbol_cap_pct is not None:
+        remaining_symbol_cap_pct_by_symbol = {
+            "BTC": settings.execution_account_state_fixture_remaining_symbol_cap_pct,
+            "ETH": settings.execution_account_state_fixture_remaining_symbol_cap_pct,
+            "SOL": settings.execution_account_state_fixture_remaining_symbol_cap_pct,
+        }
+
+    remaining_long_exchange_cap_pct_by_exchange: dict[str, float] = {}
+    if settings.execution_account_state_fixture_remaining_long_exchange_cap_pct is not None:
+        remaining_long_exchange_cap_pct_by_exchange = {
+            "binance": settings.execution_account_state_fixture_remaining_long_exchange_cap_pct,
+            "okx": settings.execution_account_state_fixture_remaining_long_exchange_cap_pct,
+            "hyperliquid": settings.execution_account_state_fixture_remaining_long_exchange_cap_pct,
+            "lighter": settings.execution_account_state_fixture_remaining_long_exchange_cap_pct,
+        }
+
+    remaining_short_exchange_cap_pct_by_exchange: dict[str, float] = {}
+    if settings.execution_account_state_fixture_remaining_short_exchange_cap_pct is not None:
+        remaining_short_exchange_cap_pct_by_exchange = {
+            "binance": settings.execution_account_state_fixture_remaining_short_exchange_cap_pct,
+            "okx": settings.execution_account_state_fixture_remaining_short_exchange_cap_pct,
+            "hyperliquid": settings.execution_account_state_fixture_remaining_short_exchange_cap_pct,
+            "lighter": settings.execution_account_state_fixture_remaining_short_exchange_cap_pct,
+        }
+
+    return ExecutionAccountState(
+        remaining_total_cap_pct=settings.execution_account_state_fixture_remaining_total_cap_pct,
+        remaining_symbol_cap_pct_by_symbol=remaining_symbol_cap_pct_by_symbol,
+        remaining_long_exchange_cap_pct_by_exchange=remaining_long_exchange_cap_pct_by_exchange,
+        remaining_short_exchange_cap_pct_by_exchange=remaining_short_exchange_cap_pct_by_exchange,
+    )
+
+
 def get_execution_account_state_provider(settings: Settings) -> ExecutionAccountStateProvider:
-    provider_name = str(getattr(settings, "execution_account_state_provider", "null")).strip().lower()
-    if provider_name == "null":
+    provider_name = resolve_execution_account_state_provider_name(settings)
+
+    if provider_name in {"", "null"}:
         return NullExecutionAccountStateProvider()
-    return NullExecutionAccountStateProvider()
+
+    if provider_name == "fixed_fixture":
+        return FixedExecutionAccountStateProvider(_build_fixed_fixture_execution_account_state(settings))
+
+    raise ValueError(
+        "Unknown execution account state provider "
+        f"'{provider_name}'. Supported providers: null, fixed_fixture"
+    )
