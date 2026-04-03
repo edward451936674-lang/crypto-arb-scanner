@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     execution_live_remaining_long_exchange_cap_pct: float = 0.08
     execution_live_remaining_short_exchange_cap_pct: float = 0.08
 
+    execution_account_state_provider: str = "null"
+    execution_account_state_fixture_remaining_total_cap_pct: float = 0.08
+    execution_account_state_fixture_remaining_symbol_cap_pct: float = 0.08
+    execution_account_state_fixture_remaining_long_exchange_cap_pct: float = 0.08
+    execution_account_state_fixture_remaining_short_exchange_cap_pct: float = 0.08
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="ARB_",
