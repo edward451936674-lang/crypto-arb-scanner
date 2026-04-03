@@ -6,8 +6,13 @@ from app.main import get_opportunities
 from app.models.market import MarketDataResponse, MarketSnapshot
 from app.services.arbitrage_scanner import ArbitrageScannerService, EXECUTION_RISK_CONFIGS, ExecutionRiskConfig
 from app.services.execution_sizing_policy import (
+    ExecutionAccountState,
     ExecutionAccountInputs,
     ExecutionSizingPolicyEvaluator,
+)
+from app.services.execution_account_state import (
+    ExecutionAccountStateProvider,
+    NullExecutionAccountStateProvider,
 )
 from app.services.market_data import MarketDataService
 
@@ -440,6 +445,86 @@ def test_get_opportunities_exposes_execution_readiness_overlay(monkeypatch) -> N
     assert item["extended_size_up_execution_blockers"] == ["none"]
     assert item["execution_max_single_cap_pct"] == 0.037
     assert item["execution_cap_reasons"] == ["capped_by_live_remaining_symbol"]
+
+
+def test_get_opportunities_default_provider_matches_null_provider(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    default_response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    monkeypatch.setattr("app.main.execution_account_state_provider", NullExecutionAccountStateProvider())
+    null_provider_response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert default_response == null_provider_response
+
+
+def test_get_opportunities_fake_provider_can_override_execution_account_state(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    class FixedExecutionAccountStateProvider(ExecutionAccountStateProvider):
+        def get_account_state(self, opportunity):
+            return ExecutionAccountState(
+                remaining_total_cap_pct=0.01,
+                remaining_symbol_cap_pct_by_symbol={opportunity.symbol: 0.01},
+                remaining_long_exchange_cap_pct_by_exchange={opportunity.long_exchange: 0.01},
+                remaining_short_exchange_cap_pct_by_exchange={opportunity.short_exchange: 0.01},
+            )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr("app.main.execution_account_state_provider", FixedExecutionAccountStateProvider())
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    assert item["execution_max_single_cap_pct"] == 0.01
+    assert item["extended_size_up_execution_ready"] is False
+    assert "capped_by_live_remaining_total" in item["execution_cap_reasons"]
+
+
+def test_get_opportunities_default_hydration_preserves_opportunity_semantics(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+    hydrated = response["opportunities"][0]
+
+    scanner = ArbitrageScannerService()
+    base = scanner.build_opportunities(
+        [
+            _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+            _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+        ]
+    )[0]
+
+    assert hydrated["execution_mode"] == base.execution_mode
+    assert hydrated["suggested_position_pct"] == base.suggested_position_pct
+    assert hydrated["final_position_pct"] == base.final_position_pct
 
 
 def test_get_opportunities_natural_extended_size_up_risk_eligible(monkeypatch) -> None:

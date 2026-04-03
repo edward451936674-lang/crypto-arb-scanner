@@ -28,10 +28,15 @@ from app.services.execution_sizing_policy import (
     resolve_execution_policy_profile_name,
     resolve_execution_policy_profile,
 )
+from app.services.execution_account_state import (
+    ExecutionAccountStateProvider,
+    NullExecutionAccountStateProvider,
+)
 from app.services.market_data import MarketDataService
 from app.services.opportunity_replay import OpportunityReplayService
 
 settings = get_settings()
+execution_account_state_provider: ExecutionAccountStateProvider = NullExecutionAccountStateProvider()
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
@@ -334,13 +339,16 @@ def _hydrate_execution_sizing_outputs(
     opportunities: list[Opportunity],
     *,
     active_execution_policy_profile: str,
+    account_state_provider: ExecutionAccountStateProvider | None = None,
 ) -> list[Opportunity]:
     resolved_execution_policy = resolve_execution_policy_profile(settings)
+    provider = account_state_provider or execution_account_state_provider
     hydrated = []
     for opportunity in opportunities:
+        account_state = provider.get_account_state(opportunity)
         decision = ExecutionSizingPolicyEvaluator.evaluate(
             opportunity=opportunity,
-            account_inputs=build_execution_account_inputs(settings, opportunity),
+            account_inputs=build_execution_account_inputs(settings, opportunity, account_state=account_state),
         )
         hydrated.append(
             opportunity.model_copy(
