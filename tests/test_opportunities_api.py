@@ -11,7 +11,7 @@ from app.services.execution_sizing_policy import (
     ExecutionSizingPolicyEvaluator,
 )
 from app.services.execution_account_state import (
-    ExecutionAccountStateProvider,
+    FixedExecutionAccountStateProvider,
     NullExecutionAccountStateProvider,
 )
 from app.services.market_data import MarketDataService
@@ -478,17 +478,14 @@ def test_get_opportunities_fake_provider_can_override_execution_account_state(mo
             errors=[],
         )
 
-    class FixedExecutionAccountStateProvider(ExecutionAccountStateProvider):
-        def get_account_state(self, opportunity):
-            return ExecutionAccountState(
-                remaining_total_cap_pct=0.01,
-                remaining_symbol_cap_pct_by_symbol={opportunity.symbol: 0.01},
-                remaining_long_exchange_cap_pct_by_exchange={opportunity.long_exchange: 0.01},
-                remaining_short_exchange_cap_pct_by_exchange={opportunity.short_exchange: 0.01},
-            )
-
     monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
-    monkeypatch.setattr("app.main.execution_account_state_provider", FixedExecutionAccountStateProvider())
+    fixed_state = ExecutionAccountState(
+        remaining_total_cap_pct=0.01,
+        remaining_symbol_cap_pct_by_symbol={"BTC": 0.01},
+        remaining_long_exchange_cap_pct_by_exchange={"binance": 0.01},
+        remaining_short_exchange_cap_pct_by_exchange={"okx": 0.01},
+    )
+    monkeypatch.setattr("app.main.execution_account_state_provider", FixedExecutionAccountStateProvider(fixed_state))
 
     response = asyncio.run(get_opportunities(symbols="BTC"))
 

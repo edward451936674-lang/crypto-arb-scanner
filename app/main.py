@@ -30,13 +30,13 @@ from app.services.execution_sizing_policy import (
 )
 from app.services.execution_account_state import (
     ExecutionAccountStateProvider,
-    NullExecutionAccountStateProvider,
+    get_execution_account_state_provider,
 )
 from app.services.market_data import MarketDataService
 from app.services.opportunity_replay import OpportunityReplayService
 
 settings = get_settings()
-execution_account_state_provider: ExecutionAccountStateProvider = NullExecutionAccountStateProvider()
+execution_account_state_provider: ExecutionAccountStateProvider = get_execution_account_state_provider(settings)
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
