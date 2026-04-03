@@ -31,6 +31,9 @@ from app.services.execution_sizing_policy import (
 from app.services.execution_account_state import (
     ExecutionAccountStateProvider,
     get_execution_account_state_provider,
+    resolve_execution_account_state_fixture_scenario,
+    resolve_execution_account_state_provider_name,
+    resolve_fixed_fixture_remaining_caps,
 )
 from app.services.market_data import MarketDataService
 from app.services.opportunity_replay import OpportunityReplayService
@@ -69,6 +72,14 @@ async def healthz() -> dict[str, str]:
 @app.get("/api/v1/meta")
 async def meta() -> dict[str, object]:
     resolved_execution_policy = resolve_execution_policy_profile(settings)
+    execution_account_state_provider_name = resolve_execution_account_state_provider_name(settings)
+    execution_account_state_fixture_scenario = str(
+        getattr(settings, "execution_account_state_fixture_scenario", "roomy")
+    ).strip().lower()
+    execution_account_state_resolved: dict[str, float] | None = None
+    if execution_account_state_provider_name == "fixed_fixture":
+        execution_account_state_fixture_scenario = resolve_execution_account_state_fixture_scenario(settings)
+        execution_account_state_resolved = resolve_fixed_fixture_remaining_caps(settings)
     return {
         "supported_symbols": supported_symbols(),
         "enabled_exchanges": {
@@ -79,6 +90,9 @@ async def meta() -> dict[str, object]:
         },
         "default_symbols": settings.default_symbols,
         "execution_policy_profile": settings.execution_policy_profile,
+        "execution_account_state_provider": execution_account_state_provider_name,
+        "execution_account_state_fixture_scenario": execution_account_state_fixture_scenario,
+        "execution_account_state_resolved": execution_account_state_resolved,
         "execution_policy_resolved": {
             "extended_size_up_enabled": resolved_execution_policy.extended_size_up_enabled,
             "live_target_leverage": resolved_execution_policy.live_target_leverage,

@@ -25,6 +25,9 @@ def test_meta_includes_execution_policy_for_dev_default(monkeypatch) -> None:
     response = asyncio.run(_run_meta_with_settings(monkeypatch, settings))
 
     assert response["execution_policy_profile"] == "dev_default"
+    assert response["execution_account_state_provider"] == "null"
+    assert response["execution_account_state_fixture_scenario"] == "roomy"
+    assert response["execution_account_state_resolved"] is None
     assert response["execution_policy_resolved"] == {
         "extended_size_up_enabled": False,
         "live_target_leverage": 1.25,
@@ -55,4 +58,26 @@ def test_meta_includes_execution_policy_for_named_profile(monkeypatch) -> None:
         "live_remaining_symbol_cap_pct": 0.05,
         "live_remaining_long_exchange_cap_pct": 0.05,
         "live_remaining_short_exchange_cap_pct": 0.05,
+    }
+
+
+def test_meta_includes_fixed_fixture_execution_account_state(monkeypatch) -> None:
+    response = asyncio.run(
+        _run_meta_with_settings(
+            monkeypatch,
+            Settings(
+                execution_account_state_provider="fixed_fixture",
+                execution_account_state_fixture_scenario="exhausted",
+                execution_account_state_fixture_remaining_total_cap_pct=0.02,
+            ),
+        )
+    )
+
+    assert response["execution_account_state_provider"] == "fixed_fixture"
+    assert response["execution_account_state_fixture_scenario"] == "exhausted"
+    assert response["execution_account_state_resolved"] == {
+        "remaining_total_cap_pct": 0.02,
+        "remaining_symbol_cap_pct": 0.0,
+        "remaining_long_exchange_cap_pct": 0.0,
+        "remaining_short_exchange_cap_pct": 0.0,
     }
