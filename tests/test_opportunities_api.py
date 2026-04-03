@@ -482,6 +482,36 @@ def test_get_opportunities_fixed_fixture_provider_mode_applies_fixture_caps(monk
     assert item["extended_size_up_execution_ready"] is False
 
 
+def test_get_opportunities_fixed_fixture_tight_scenario_reduces_execution_max_single_cap_pct(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.001, funding_rate_source="latest_reported"),
+                _snapshot("okx", 101.0, funding_rate=0.001, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    monkeypatch.setattr(
+        "app.main.execution_account_state_provider",
+        get_execution_account_state_provider(
+            Settings(
+                execution_account_state_provider="fixed_fixture",
+                execution_account_state_fixture_scenario="tight",
+            )
+        ),
+    )
+
+    response = asyncio.run(get_opportunities(symbols="BTC"))
+
+    assert len(response["opportunities"]) == 1
+    item = response["opportunities"][0]
+    assert item["execution_max_single_cap_pct"] == 0.04
+    assert item["extended_size_up_execution_ready"] is False
+
+
 def test_get_opportunities_null_provider_mode_matches_default_behavior(monkeypatch) -> None:
     async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
         return MarketDataResponse(
