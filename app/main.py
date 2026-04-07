@@ -1,5 +1,6 @@
 from html import escape
 from dataclasses import dataclass
+import time
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
@@ -39,11 +40,15 @@ from app.services.execution_account_state import (
     resolve_fixed_fixture_remaining_caps,
 )
 from app.services.market_data import MarketDataService
+from app.services.opportunity_observer import OpportunityObserverService
 from app.services.opportunity_replay import OpportunityReplayService
+from app.storage.observations import ObservationStore
 from app.services.telegram_notifier import TelegramNotifier, TelegramNotifierConfig
 
 settings = get_settings()
 execution_account_state_provider: ExecutionAccountStateProvider = get_execution_account_state_provider(settings)
+observation_store = ObservationStore(settings.observations_db_path)
+opportunity_observer = OpportunityObserverService()
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
@@ -286,6 +291,36 @@ async def get_opportunities(
         snapshot_errors=opportunities_response.snapshot_errors,
     )
     return response.model_dump()
+
+
+@app.post("/api/v1/observe/run")
+async def run_observation_collection(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+) -> dict[str, object]:
+    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
+    scan_context = await _build_scan_context(requested_symbols)
+    contexts = opportunity_observer.build_observation_contexts(scan_context.opportunities, scan_context.accepted_snapshots)
+    selected = opportunity_observer.select_top_opportunities(contexts)
+    observed_at_ms = int(time.time() * 1000)
+    records = opportunity_observer.to_observation_records(selected, observed_at_ms)
+    observation_store.insert_many(records)
+    summary = opportunity_observer.build_summary(evaluated_count=len(scan_context.opportunities), records=records)
+    return summary.model_dump()
+
+
+@app.get("/api/v1/observe/latest")
+async def get_latest_observations(limit: int = Query(default=20, ge=1, le=500)) -> dict[str, object]:
+    records = observation_store.latest(limit=limit)
+    return {"count": len(records), "items": [item.model_dump() for item in records]}
+
+
+@app.get("/api/v1/observe/history")
+async def get_observation_history(
+    symbol: str = Query(..., min_length=1, description="Base symbol, e.g. BTC"),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, object]:
+    records = observation_store.history(symbol=symbol, limit=limit)
+    return {"symbol": symbol.upper(), "count": len(records), "items": [item.model_dump() for item in records]}
 
 
 @app.get("/api/v1/replay-preview")
