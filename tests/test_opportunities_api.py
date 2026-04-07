@@ -16,6 +16,7 @@ from app.services.execution_account_state import (
     get_execution_account_state_provider,
 )
 from app.services.market_data import MarketDataService
+import app.main as main_module
 
 
 def _snapshot(
@@ -1581,3 +1582,82 @@ def test_non_risk_eligible_opportunity_remains_execution_not_ready(monkeypatch) 
     item = response["opportunities"][0]
     assert item["extended_size_up_execution_ready"] is False
     assert "extended_size_up_risk_not_eligible" in item["extended_size_up_execution_blockers"]
+
+
+def test_opportunities_top_n_and_min_edge_filters(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.0003, funding_rate_source="latest_reported"),
+                _snapshot("okx", 100.35, funding_rate=0.0003, funding_rate_source="current"),
+                _snapshot("hyperliquid", 100.25, funding_rate=0.0002, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(get_opportunities(symbols="BTC", top_n=1, min_edge_bps=20.0))
+
+    assert len(response["opportunities"]) == 1
+    assert response["opportunities"][0]["net_edge_bps"] >= 20.0
+
+
+def test_opportunities_only_actionable_filters_paper_rows(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.00002, funding_rate_source="latest_reported"),
+                _snapshot("okx", 100.03, funding_rate=0.00002, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    response = asyncio.run(get_opportunities(symbols="BTC", only_actionable=True))
+
+    assert response["opportunities"] == []
+
+
+def test_opportunities_dedupe_by_route_keeps_best_row(monkeypatch) -> None:
+    scanner = ArbitrageScannerService()
+    snapshots = [
+        _snapshot("binance", 100.0, funding_rate=-0.0003, funding_rate_source="latest_reported"),
+        _snapshot("okx", 100.35, funding_rate=0.0003, funding_rate_source="current"),
+    ]
+    built = scanner.build_opportunities(snapshots)
+    duplicate = built[0].model_copy(update={"cluster_id": "BTC|binance|dup", "net_edge_bps": built[0].net_edge_bps - 5.0})
+    duplicated_opportunities = [built[0], duplicate]
+
+    async def fake_scan_context(requested_symbols: list[str]) -> main_module._ScanContext:
+        return main_module._ScanContext(
+            requested_symbols=requested_symbols,
+            opportunities=duplicated_opportunities,
+            snapshot_errors=[],
+            accepted_snapshots=snapshots,
+        )
+
+    monkeypatch.setattr(main_module, "_build_scan_context", fake_scan_context)
+    response = asyncio.run(get_opportunities(symbols="BTC", dedupe_by_route=True))
+    assert len(response["opportunities"]) == 1
+
+
+def test_opportunities_ranking_is_deterministic(monkeypatch) -> None:
+    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
+        return MarketDataResponse(
+            requested_symbols=symbols,
+            snapshots=[
+                _snapshot("binance", 100.0, funding_rate=-0.0003, funding_rate_source="latest_reported"),
+                _snapshot("okx", 100.35, funding_rate=0.0003, funding_rate_source="current"),
+                _snapshot("hyperliquid", 100.4, funding_rate=0.00035, funding_rate_source="current"),
+            ],
+            errors=[],
+        )
+
+    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+    first = asyncio.run(get_opportunities(symbols="BTC", min_score=0.0))
+    second = asyncio.run(get_opportunities(symbols="BTC", min_score=0.0))
+    first_keys = [(item["symbol"], item["long_exchange"], item["short_exchange"], item["rank"]) for item in first["opportunities"]]
+    second_keys = [(item["symbol"], item["long_exchange"], item["short_exchange"], item["rank"]) for item in second["opportunities"]]
+    assert first_keys == second_keys

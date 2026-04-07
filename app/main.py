@@ -381,17 +381,39 @@ async def get_opportunities(
     symbols: str | None = Query(
         default=None,
         description="Comma separated base symbols, e.g. BTC,ETH,SOL",
-    )
+    ),
+    top_n: int | None = Query(default=None, ge=1, le=500),
+    min_edge_bps: float = Query(default=0.0),
+    min_score: float | None = Query(default=None),
+    symbol: str | None = Query(default=None, min_length=1),
+    only_actionable: bool = Query(default=False),
+    dedupe_by_route: bool = Query(default=False),
 ) -> dict[str, object]:
+    top_n_value = top_n if isinstance(top_n, int) else None
+    min_edge_bps_value = float(min_edge_bps) if isinstance(min_edge_bps, int | float) else 0.0
+    min_score_value = float(min_score) if isinstance(min_score, int | float) else None
+    symbol_value = symbol if isinstance(symbol, str) else None
+    only_actionable_value = bool(only_actionable) if isinstance(only_actionable, bool) else False
+    dedupe_by_route_value = bool(dedupe_by_route) if isinstance(dedupe_by_route, bool) else False
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
     try:
-        opportunities_response = await _build_opportunities_response(requested_symbols)
+        scan_context = await _build_scan_context(requested_symbols)
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    final_symbol_filter = symbol_value.upper() if symbol_value else None
+    opportunities = _rank_and_filter_opportunities(
+        scan_context=scan_context,
+        min_edge_bps=min_edge_bps_value,
+        min_score=min_score_value,
+        symbol=final_symbol_filter,
+        only_actionable=only_actionable_value,
+        dedupe_by_route=dedupe_by_route_value,
+        top_n=top_n_value,
+    )
     response = OpportunitiesResponse(
-        requested_symbols=opportunities_response.requested_symbols,
-        opportunities=opportunities_response.opportunities,
-        snapshot_errors=opportunities_response.snapshot_errors,
+        requested_symbols=scan_context.requested_symbols,
+        opportunities=opportunities,
+        snapshot_errors=scan_context.snapshot_errors,
     )
     return response.model_dump()
 
@@ -716,6 +738,146 @@ async def _build_scan_context(requested_symbols: list[str]) -> _ScanContext:
 async def _collect_current_opportunities(requested_symbols: list[str]) -> list[Opportunity]:
     response = await _build_opportunities_response(requested_symbols)
     return response.opportunities
+
+
+def _rank_and_filter_opportunities(
+    *,
+    scan_context: _ScanContext,
+    min_edge_bps: float,
+    min_score: float | None,
+    symbol: str | None,
+    only_actionable: bool,
+    dedupe_by_route: bool,
+    top_n: int | None,
+) -> list[Opportunity]:
+    assumptions = ReplayAssumptions(
+        holding_mode="to_next_funding",
+        slippage_bps_per_leg=1.0,
+        extra_exit_slippage_bps_per_leg=0.5,
+        latency_decay_bps=0.2,
+        borrow_or_misc_cost_bps=0.0,
+    )
+    replay_service = OpportunityReplayService()
+    snapshot_lookup = _snapshot_lookup(scan_context.accepted_snapshots)
+    recent_observations = observation_store.latest(limit=500)
+    route_history = _build_route_history_lookup(recent_observations)
+
+    enriched: list[tuple[tuple[float, ...], Opportunity]] = []
+    for opportunity in scan_context.opportunities:
+        if opportunity.net_edge_bps < min_edge_bps:
+            continue
+        if symbol and opportunity.symbol != symbol:
+            continue
+        if only_actionable and not _is_actionable_opportunity(opportunity):
+            continue
+
+        route_key = alert_memory.route_key_for(
+            symbol=opportunity.symbol,
+            long_exchange=opportunity.long_exchange,
+            short_exchange=opportunity.short_exchange,
+        )
+        long_snapshot = snapshot_lookup.get((opportunity.symbol, opportunity.long_exchange.lower()))
+        short_snapshot = snapshot_lookup.get((opportunity.symbol, opportunity.short_exchange.lower()))
+        replay_net = None
+        if long_snapshot is not None and short_snapshot is not None:
+            replay_net = replay_service.replay(opportunity, long_snapshot, short_snapshot, assumptions).net_realized_edge_bps
+
+        observation_count = len(route_history.get(_route_key_identity(opportunity.symbol, opportunity.long_exchange, opportunity.short_exchange), []))
+        score = _opportunity_output_score(
+            opportunity=opportunity,
+            replay_net_after_cost_bps=replay_net,
+            observation_count=observation_count,
+        )
+        if min_score is not None and score < min_score:
+            continue
+        opportunity_type = "cash_and_carry" if opportunity.hourly_funding_spread_bps is not None else "basis"
+        updated = opportunity.model_copy(
+            update={
+                "route_key": route_key,
+                "replay_net_after_cost_bps": replay_net,
+                "score": score,
+                "opportunity_type": opportunity_type,
+            }
+        )
+        ranking_key = (
+            score,
+            replay_net if replay_net is not None else float("-inf"),
+            updated.net_edge_bps,
+            updated.final_position_pct,
+            float(observation_count),
+            -_execution_mode_rank(updated.execution_mode),
+        )
+        enriched.append((ranking_key, updated))
+
+    enriched.sort(
+        key=lambda item: (
+            -item[0][0],
+            -item[0][1],
+            -item[0][2],
+            -item[0][3],
+            -item[0][4],
+            item[0][5],
+            item[1].symbol,
+            item[1].long_exchange,
+            item[1].short_exchange,
+        )
+    )
+    ranked = [item for _, item in enriched]
+    if dedupe_by_route:
+        ranked = _dedupe_best_by_route(ranked)
+    if top_n is not None:
+        ranked = ranked[:top_n]
+
+    return [item.model_copy(update={"rank": index}) for index, item in enumerate(ranked, start=1)]
+
+
+def _is_actionable_opportunity(opportunity: Opportunity) -> bool:
+    if opportunity.execution_mode == "paper":
+        return False
+    if opportunity.final_position_pct <= 0.0:
+        return False
+    if opportunity.net_edge_bps < 8.0:
+        return False
+    return opportunity.is_executable_now
+
+
+def _execution_mode_rank(execution_mode: str) -> int:
+    return {
+        "extended_size_up": 5,
+        "size_up": 4,
+        "normal": 3,
+        "small_probe": 2,
+        "paper": 1,
+    }.get(execution_mode, 0)
+
+
+def _opportunity_output_score(
+    *,
+    opportunity: Opportunity,
+    replay_net_after_cost_bps: float | None,
+    observation_count: int,
+) -> float:
+    replay_component = replay_net_after_cost_bps if replay_net_after_cost_bps is not None else opportunity.net_edge_bps
+    persistence_bonus = min(observation_count, 20) * 0.15
+    execution_bonus = _execution_mode_rank(opportunity.execution_mode) * 0.75
+    position_bonus = opportunity.final_position_pct * 100
+    return replay_component * 0.45 + opportunity.net_edge_bps * 0.35 + execution_bonus + position_bonus + persistence_bonus
+
+
+def _dedupe_best_by_route(opportunities: list[Opportunity]) -> list[Opportunity]:
+    deduped: list[Opportunity] = []
+    seen_routes: set[str] = set()
+    for item in opportunities:
+        route_key = item.route_key or alert_memory.route_key_for(
+            symbol=item.symbol,
+            long_exchange=item.long_exchange,
+            short_exchange=item.short_exchange,
+        )
+        if route_key in seen_routes:
+            continue
+        seen_routes.add(route_key)
+        deduped.append(item)
+    return deduped
 
 
 def _is_low_signal_alert_candidate(opportunity: Opportunity, context: OpportunityObservationContext) -> bool:
