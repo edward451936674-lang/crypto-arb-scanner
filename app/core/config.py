@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     execution_account_state_fixture_remaining_symbol_cap_pct: float | None = None
     execution_account_state_fixture_remaining_long_exchange_cap_pct: float | None = None
     execution_account_state_fixture_remaining_short_exchange_cap_pct: float | None = None
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
