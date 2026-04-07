@@ -172,6 +172,11 @@ class Opportunity(BaseModel):
     portfolio_short_exchange_used_after: float = 0.0
     portfolio_rank: int | None = None
     allocation_priority_label: str | None = None
+    route_key: str | None = None
+    replay_net_after_cost_bps: float | None = None
+    score: float | None = None
+    rank: int | None = None
+    opportunity_type: str | None = None
 
 
 class OpportunitiesResponse(BaseModel):
