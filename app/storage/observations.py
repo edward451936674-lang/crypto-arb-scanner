@@ -158,6 +158,23 @@ class ObservationStore:
             ).fetchone()
         if row is None:
             return None
+        return self._row_to_alert_event(row)
+
+
+    def latest_alert_events(self, limit: int = 20) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM alert_events
+                ORDER BY sent_at_ms DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_alert_event(row) for row in rows]
+
+    def _row_to_alert_event(self, row: sqlite3.Row) -> dict[str, object]:
         raw_gate = row["replay_passes_min_trade_gate"]
         return {
             "id": row["id"],
@@ -174,7 +191,6 @@ class ObservationStore:
             "replay_passes_min_trade_gate": None if raw_gate is None else bool(raw_gate),
             "message_hash": row["message_hash"],
         }
-
     def insert_alert_event(
         self,
         *,
