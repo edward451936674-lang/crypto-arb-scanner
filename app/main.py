@@ -1,5 +1,6 @@
 from html import escape
 from dataclasses import dataclass
+import hashlib
 import time
 from typing import Literal
 
@@ -40,15 +41,17 @@ from app.services.execution_account_state import (
     resolve_fixed_fixture_remaining_caps,
 )
 from app.services.market_data import MarketDataService
-from app.services.opportunity_observer import OpportunityObserverService
+from app.services.opportunity_observer import OpportunityObservationContext, OpportunityObserverService
 from app.services.opportunity_replay import OpportunityReplayService
 from app.storage.observations import ObservationStore
 from app.services.telegram_notifier import TelegramNotifier, TelegramNotifierConfig
+from app.services.alert_memory import AlertCandidate, AlertMemoryService
 
 settings = get_settings()
 execution_account_state_provider: ExecutionAccountStateProvider = get_execution_account_state_provider(settings)
 observation_store = ObservationStore(settings.observations_db_path)
 opportunity_observer = OpportunityObserverService()
+alert_memory = AlertMemoryService()
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
@@ -168,7 +171,9 @@ async def alert_telegram_opportunities(
     top_n: int = Query(default=5, ge=1, le=20),
 ) -> dict[str, object]:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
-    opportunities = await _collect_current_opportunities(requested_symbols)
+    scan_context = await _build_scan_context(requested_symbols)
+    opportunities = scan_context.opportunities
+    contexts = opportunity_observer.build_observation_contexts(opportunities, scan_context.accepted_snapshots)
     notifier = TelegramNotifier(
         TelegramNotifierConfig(
             bot_token=settings.telegram_bot_token,
@@ -178,43 +183,101 @@ async def alert_telegram_opportunities(
     if not notifier.is_configured:
         raise HTTPException(status_code=400, detail="telegram_not_configured")
 
+    now_ms = int(time.time() * 1000)
     evaluated_count = len(opportunities)
+    eligible_count = 0
     sent_routes: list[str] = []
-    skipped: list[dict[str, str]] = []
-    deduped: list[Opportunity] = []
-    seen_routes: set[str] = set()
-    for item in opportunities:
-        route = f"{item.symbol}:{item.long_exchange}->{item.short_exchange}"
-        if route in seen_routes:
-            skipped.append({"route": route, "reason": "duplicate_route"})
+    skipped_routes: list[dict[str, str]] = []
+    skipped_due_to_dedupe_count = 0
+    filtered: list[tuple[Opportunity, OpportunityObservationContext]] = []
+    seen_identities: set[str] = set()
+    for item, context in zip(opportunities, contexts, strict=False):
+        dedupe_identity, route_key = alert_memory.dedupe_identity_for(
+            symbol=item.symbol,
+            long_exchange=item.long_exchange,
+            short_exchange=item.short_exchange,
+            cluster_id=item.cluster_id,
+        )
+        if dedupe_identity in seen_identities:
+            skipped_routes.append({"route": route_key, "reason": "duplicate_route_in_run"})
             continue
-        seen_routes.add(route)
-        deduped.append(item)
+        seen_identities.add(dedupe_identity)
+        filtered.append((item, context))
 
-    filtered: list[Opportunity] = []
-    for item in deduped:
-        route = f"{item.symbol}:{item.long_exchange}->{item.short_exchange}"
-        if item.execution_mode in {"paper", "small_probe"}:
-            skipped.append({"route": route, "reason": "non_live_execution_mode"})
+    candidates: list[tuple[Opportunity, OpportunityObservationContext]] = []
+    for item, context in filtered:
+        route_key = alert_memory.route_key_for(
+            symbol=item.symbol,
+            long_exchange=item.long_exchange,
+            short_exchange=item.short_exchange,
+        )
+        if _is_low_signal_alert_candidate(item, context):
+            skipped_routes.append({"route": route_key, "reason": "low_signal"})
             continue
         if item.net_edge_bps < min_net_edge_bps:
-            skipped.append({"route": route, "reason": "below_min_net_edge"})
+            skipped_routes.append({"route": route_key, "reason": "below_min_net_edge"})
             continue
         if item.data_quality_status not in {"healthy", "degraded"}:
-            skipped.append({"route": route, "reason": "poor_data_quality"})
+            skipped_routes.append({"route": route_key, "reason": "poor_data_quality"})
             continue
-        filtered.append(item)
+        candidates.append((item, context))
 
-    for item in filtered[:top_n]:
-        route = f"{item.symbol}:{item.long_exchange}->{item.short_exchange}"
-        await notifier.send_text(TelegramNotifier.format_opportunity_alert(item.model_dump()))
-        sent_routes.append(route)
+    eligible_count = len(candidates)
+
+    for item, context in candidates[:top_n]:
+        dedupe_identity, route_key = alert_memory.dedupe_identity_for(
+            symbol=item.symbol,
+            long_exchange=item.long_exchange,
+            short_exchange=item.short_exchange,
+            cluster_id=item.cluster_id,
+        )
+        candidate = AlertCandidate(
+            dedupe_identity=dedupe_identity,
+            cluster_id=item.cluster_id,
+            route_key=route_key,
+            symbol=item.symbol,
+            long_exchange=item.long_exchange,
+            short_exchange=item.short_exchange,
+            execution_mode=item.execution_mode,
+            final_position_pct=item.final_position_pct,
+            replay_net_after_cost_bps=context.replay_net_after_cost_bps,
+            replay_passes_min_trade_gate=context.replay_passes_min_trade_gate,
+        )
+        previous_event = observation_store.latest_alert_event(candidate.dedupe_identity)
+        decision = alert_memory.evaluate(candidate=candidate, previous_event=previous_event, now_ms=now_ms)
+        if not decision.should_send:
+            skipped_due_to_dedupe_count += 1
+            skipped_routes.append({"route": route_key, "reason": decision.reason})
+            continue
+
+        message = TelegramNotifier.format_opportunity_alert(item.model_dump())
+        message_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        observation_store.insert_alert_event(
+            sent_at_ms=now_ms,
+            dedupe_identity=candidate.dedupe_identity,
+            cluster_id=candidate.cluster_id,
+            route_key=candidate.route_key,
+            symbol=candidate.symbol,
+            long_exchange=candidate.long_exchange,
+            short_exchange=candidate.short_exchange,
+            execution_mode=candidate.execution_mode,
+            final_position_pct=candidate.final_position_pct,
+            replay_net_after_cost_bps=candidate.replay_net_after_cost_bps,
+            replay_passes_min_trade_gate=candidate.replay_passes_min_trade_gate,
+            message_hash=message_hash,
+        )
+        await notifier.send_text(message)
+        sent_routes.append(route_key)
 
     return {
-        "evaluated": evaluated_count,
-        "sent": len(sent_routes),
+        "evaluated_count": evaluated_count,
+        "eligible_count": eligible_count,
+        "sent_count": len(sent_routes),
+        "skipped_count": len(skipped_routes),
+        "skipped_due_to_dedupe_count": skipped_due_to_dedupe_count,
+        "skipped_due_to_low_signal_count": sum(1 for item in skipped_routes if item["reason"] == "low_signal"),
         "sent_routes": sent_routes,
-        "skipped": skipped,
+        "skipped_routes": skipped_routes,
     }
 
 
@@ -584,6 +647,22 @@ async def _build_scan_context(requested_symbols: list[str]) -> _ScanContext:
 async def _collect_current_opportunities(requested_symbols: list[str]) -> list[Opportunity]:
     response = await _build_opportunities_response(requested_symbols)
     return response.opportunities
+
+
+def _is_low_signal_alert_candidate(opportunity: Opportunity, context: OpportunityObservationContext) -> bool:
+    replay_net = context.replay_net_after_cost_bps if context.replay_net_after_cost_bps is not None else -999.0
+    if opportunity.execution_mode == "paper":
+        if opportunity.opportunity_grade != "watchlist":
+            return True
+        if opportunity.net_edge_bps < 10.0 and replay_net < 6.0:
+            return True
+        if not context.replay_passes_min_trade_gate and opportunity.opportunity_grade == "watchlist":
+            return True
+    if opportunity.execution_mode == "small_probe" and opportunity.net_edge_bps < 10.0 and replay_net < 6.0:
+        return True
+    if opportunity.opportunity_grade == "watchlist" and replay_net < 4.0:
+        return True
+    return False
 
 
 async def _build_dashboard_rows(requested_symbols: list[str]) -> list[DashboardRow]:

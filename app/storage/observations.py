@@ -42,6 +42,31 @@ class ObservationStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS alert_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sent_at_ms INTEGER NOT NULL,
+                    dedupe_identity TEXT NOT NULL,
+                    cluster_id TEXT,
+                    route_key TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    long_exchange TEXT NOT NULL,
+                    short_exchange TEXT NOT NULL,
+                    execution_mode TEXT,
+                    final_position_pct REAL,
+                    replay_net_after_cost_bps REAL,
+                    replay_passes_min_trade_gate INTEGER,
+                    message_hash TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_alert_events_identity_sent_at
+                ON alert_events(dedupe_identity, sent_at_ms DESC, id DESC)
+                """
+            )
 
     def insert_many(self, observations: list[ObservationRecord]) -> int:
         if not observations:
@@ -118,6 +143,87 @@ class ObservationStore:
                 (symbol.upper(), limit),
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
+
+    def latest_alert_event(self, dedupe_identity: str) -> dict[str, object] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM alert_events
+                WHERE dedupe_identity = ?
+                ORDER BY sent_at_ms DESC, id DESC
+                LIMIT 1
+                """,
+                (dedupe_identity,),
+            ).fetchone()
+        if row is None:
+            return None
+        raw_gate = row["replay_passes_min_trade_gate"]
+        return {
+            "id": row["id"],
+            "sent_at_ms": row["sent_at_ms"],
+            "dedupe_identity": row["dedupe_identity"],
+            "cluster_id": row["cluster_id"],
+            "route_key": row["route_key"],
+            "symbol": row["symbol"],
+            "long_exchange": row["long_exchange"],
+            "short_exchange": row["short_exchange"],
+            "execution_mode": row["execution_mode"],
+            "final_position_pct": row["final_position_pct"],
+            "replay_net_after_cost_bps": row["replay_net_after_cost_bps"],
+            "replay_passes_min_trade_gate": None if raw_gate is None else bool(raw_gate),
+            "message_hash": row["message_hash"],
+        }
+
+    def insert_alert_event(
+        self,
+        *,
+        sent_at_ms: int,
+        dedupe_identity: str,
+        cluster_id: str | None,
+        route_key: str,
+        symbol: str,
+        long_exchange: str,
+        short_exchange: str,
+        execution_mode: str | None,
+        final_position_pct: float | None,
+        replay_net_after_cost_bps: float | None,
+        replay_passes_min_trade_gate: bool | None,
+        message_hash: str | None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO alert_events (
+                    sent_at_ms,
+                    dedupe_identity,
+                    cluster_id,
+                    route_key,
+                    symbol,
+                    long_exchange,
+                    short_exchange,
+                    execution_mode,
+                    final_position_pct,
+                    replay_net_after_cost_bps,
+                    replay_passes_min_trade_gate,
+                    message_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sent_at_ms,
+                    dedupe_identity,
+                    cluster_id,
+                    route_key,
+                    symbol,
+                    long_exchange,
+                    short_exchange,
+                    execution_mode,
+                    final_position_pct,
+                    replay_net_after_cost_bps,
+                    None if replay_passes_min_trade_gate is None else int(replay_passes_min_trade_gate),
+                    message_hash,
+                ),
+            )
 
     def _row_to_record(self, row: sqlite3.Row) -> ObservationRecord:
         raw_passes = row["replay_passes_min_trade_gate"]
