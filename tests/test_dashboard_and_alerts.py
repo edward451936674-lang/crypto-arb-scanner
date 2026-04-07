@@ -178,10 +178,18 @@ def test_alert_route_filters_and_sends(monkeypatch, tmp_path) -> None:
     assert payload["evaluated_count"] == 4
     assert payload["eligible_count"] == 1
     assert payload["sent_count"] == 1
+    assert payload["send_failed_count"] == 0
     assert len(sent) == 1
     assert any(skip["reason"] == "below_min_net_edge" for skip in payload["skipped_routes"])
     assert any(skip["reason"] == "low_signal" for skip in payload["skipped_routes"])
     assert any(skip["reason"] == "poor_data_quality" for skip in payload["skipped_routes"])
+    dedupe_identity, _ = main_module.alert_memory.dedupe_identity_for(
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        cluster_id=None,
+    )
+    assert main_module.observation_store.latest_alert_event(dedupe_identity) is not None
 
 
 def test_alert_route_requires_telegram_config(monkeypatch) -> None:
@@ -306,6 +314,142 @@ def test_alert_route_uses_cluster_identity_for_dedupe(monkeypatch, tmp_path) -> 
     assert payload["sent_count"] == 1
     assert len(sent) == 1
     assert any(skip["reason"] == "duplicate_route_in_run" for skip in payload["skipped_routes"])
+
+
+def test_failed_send_does_not_persist_alert_memory(monkeypatch, tmp_path) -> None:
+    item = _opportunity(symbol="BTC", net_edge_bps=35.0, execution_mode="normal")
+
+    async def fake_scan_context(_: list[str]) -> main_module._ScanContext:
+        return main_module._ScanContext(
+            requested_symbols=["BTC"],
+            opportunities=[item],
+            snapshot_errors=[],
+            accepted_snapshots=[],
+        )
+
+    def fake_contexts(
+        opportunities: list[Opportunity],
+        snapshots: list[main_module.MarketSnapshot],
+    ) -> list[OpportunityObservationContext]:
+        del snapshots
+        return [
+            OpportunityObservationContext(
+                opportunity=it,
+                why_not_tradable="",
+                replay_net_after_cost_bps=10.0,
+                replay_confidence_label="high",
+                replay_passes_min_trade_gate=True,
+                replay_summary="",
+            )
+            for it in opportunities
+        ]
+
+    async def fake_send(self: TelegramNotifier, text: str) -> bool:
+        del self, text
+        return False
+
+    store = ObservationStore(str(tmp_path / "obs.sqlite3"))
+    monkeypatch.setattr(main_module, "_build_scan_context", fake_scan_context)
+    monkeypatch.setattr(main_module.opportunity_observer, "build_observation_contexts", fake_contexts)
+    monkeypatch.setattr(main_module.settings, "telegram_bot_token", "token")
+    monkeypatch.setattr(main_module.settings, "telegram_chat_id", "chat")
+    monkeypatch.setattr(TelegramNotifier, "send_text", fake_send)
+    monkeypatch.setattr(main_module, "observation_store", store)
+
+    client = TestClient(app)
+    response = client.post("/api/v1/alerts/telegram/opportunities", params={"top_n": 1, "min_net_edge_bps": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sent_count"] == 0
+    assert payload["send_failed_count"] == 1
+    assert any(skip["reason"] == "send_failed" for skip in payload["skipped_routes"])
+
+    dedupe_identity, _ = main_module.alert_memory.dedupe_identity_for(
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        cluster_id=None,
+    )
+    assert store.latest_alert_event(dedupe_identity) is None
+
+
+def test_deduped_candidates_do_not_consume_top_n(monkeypatch, tmp_path) -> None:
+    first = _opportunity(symbol="BTC", long_exchange="binance", short_exchange="okx", net_edge_bps=35.0)
+    second = _opportunity(symbol="ETH", long_exchange="binance", short_exchange="okx", net_edge_bps=30.0)
+    third = _opportunity(symbol="SOL", long_exchange="binance", short_exchange="okx", net_edge_bps=28.0)
+    opportunities = [first, second, third]
+
+    async def fake_scan_context(_: list[str]) -> main_module._ScanContext:
+        return main_module._ScanContext(
+            requested_symbols=["BTC", "ETH", "SOL"],
+            opportunities=opportunities,
+            snapshot_errors=[],
+            accepted_snapshots=[],
+        )
+
+    def fake_contexts(
+        opportunities: list[Opportunity],
+        snapshots: list[main_module.MarketSnapshot],
+    ) -> list[OpportunityObservationContext]:
+        del snapshots
+        return [
+            OpportunityObservationContext(
+                opportunity=it,
+                why_not_tradable="",
+                replay_net_after_cost_bps=10.0,
+                replay_confidence_label="high",
+                replay_passes_min_trade_gate=True,
+                replay_summary="",
+            )
+            for it in opportunities
+        ]
+
+    sent: list[str] = []
+
+    async def fake_send(self: TelegramNotifier, text: str) -> bool:
+        del self
+        sent.append(text)
+        return True
+
+    store = ObservationStore(str(tmp_path / "obs.sqlite3"))
+    dedupe_identity, route_key = main_module.alert_memory.dedupe_identity_for(
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        cluster_id=None,
+    )
+    store.insert_alert_event(
+        sent_at_ms=999_000,
+        dedupe_identity=dedupe_identity,
+        cluster_id=None,
+        route_key=route_key,
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        execution_mode="normal",
+        final_position_pct=0.03,
+        replay_net_after_cost_bps=10.0,
+        replay_passes_min_trade_gate=True,
+        message_hash="abc",
+    )
+
+    monkeypatch.setattr(main_module, "_build_scan_context", fake_scan_context)
+    monkeypatch.setattr(main_module.opportunity_observer, "build_observation_contexts", fake_contexts)
+    monkeypatch.setattr(main_module.settings, "telegram_bot_token", "token")
+    monkeypatch.setattr(main_module.settings, "telegram_chat_id", "chat")
+    monkeypatch.setattr(TelegramNotifier, "send_text", fake_send)
+    monkeypatch.setattr(main_module, "observation_store", store)
+    monkeypatch.setattr(main_module.time, "time", lambda: 1000.0)
+
+    client = TestClient(app)
+    response = client.post("/api/v1/alerts/telegram/opportunities", params={"top_n": 2, "min_net_edge_bps": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sent_count"] == 2
+    assert payload["skipped_due_to_dedupe_count"] == 1
+    assert len(sent) == 2
+    assert any("ETH: long" in text for text in sent)
+    assert any("SOL: long" in text for text in sent)
 
 
 def test_build_dashboard_rows_includes_replay_details(monkeypatch) -> None:

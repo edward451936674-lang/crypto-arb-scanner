@@ -223,8 +223,11 @@ async def alert_telegram_opportunities(
         candidates.append((item, context))
 
     eligible_count = len(candidates)
+    send_failed_count = 0
 
-    for item, context in candidates[:top_n]:
+    for item, context in candidates:
+        if len(sent_routes) >= top_n:
+            break
         dedupe_identity, route_key = alert_memory.dedupe_identity_for(
             symbol=item.symbol,
             long_exchange=item.long_exchange,
@@ -251,6 +254,15 @@ async def alert_telegram_opportunities(
             continue
 
         message = TelegramNotifier.format_opportunity_alert(item.model_dump())
+        try:
+            sent_ok = await notifier.send_text(message)
+        except Exception:
+            sent_ok = False
+        if not sent_ok:
+            send_failed_count += 1
+            skipped_routes.append({"route": route_key, "reason": "send_failed"})
+            continue
+
         message_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
         observation_store.insert_alert_event(
             sent_at_ms=now_ms,
@@ -266,13 +278,13 @@ async def alert_telegram_opportunities(
             replay_passes_min_trade_gate=candidate.replay_passes_min_trade_gate,
             message_hash=message_hash,
         )
-        await notifier.send_text(message)
         sent_routes.append(route_key)
 
     return {
         "evaluated_count": evaluated_count,
         "eligible_count": eligible_count,
         "sent_count": len(sent_routes),
+        "send_failed_count": send_failed_count,
         "skipped_count": len(skipped_routes),
         "skipped_due_to_dedupe_count": skipped_due_to_dedupe_count,
         "skipped_due_to_low_signal_count": sum(1 for item in skipped_routes if item["reason"] == "low_signal"),
