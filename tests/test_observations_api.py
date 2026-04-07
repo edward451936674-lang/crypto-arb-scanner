@@ -109,6 +109,151 @@ def test_select_top_opportunities_filters_low_signal() -> None:
     assert selected[0].opportunity.execution_mode == "small_probe"
 
 
+def test_select_top_opportunities_keeps_multiple_routes_per_symbol() -> None:
+    observer = OpportunityObserverService()
+    base = _build_opportunity()
+
+    probe_route = OpportunityObservationContext(
+        opportunity=base.model_copy(
+            update={
+                "long_exchange": "hyperliquid",
+                "short_exchange": "lighter",
+                "execution_mode": "small_probe",
+                "final_position_pct": 0.01,
+                "net_edge_bps": 11.0,
+                "opportunity_grade": "tradable",
+                "risk_flags": [],
+            }
+        ),
+        why_not_tradable="small probe only",
+        replay_net_after_cost_bps=7.5,
+        replay_confidence_label="medium",
+        replay_passes_min_trade_gate=True,
+        replay_summary="",
+    )
+    mixed_semantics_watchlist = OpportunityObservationContext(
+        opportunity=base.model_copy(
+            update={
+                "long_exchange": "okx",
+                "short_exchange": "lighter",
+                "execution_mode": "paper",
+                "final_position_pct": 0.0,
+                "net_edge_bps": 10.0,
+                "opportunity_grade": "watchlist",
+                "risk_flags": ["mixed_funding_sources"],
+            }
+        ),
+        why_not_tradable="mixed funding semantics",
+        replay_net_after_cost_bps=5.8,
+        replay_confidence_label="low",
+        replay_passes_min_trade_gate=False,
+        replay_summary="",
+    )
+    period_mismatch_watchlist = OpportunityObservationContext(
+        opportunity=base.model_copy(
+            update={
+                "long_exchange": "binance",
+                "short_exchange": "lighter",
+                "execution_mode": "paper",
+                "final_position_pct": 0.0,
+                "net_edge_bps": 9.2,
+                "opportunity_grade": "watchlist",
+                "risk_flags": ["different_funding_periods"],
+            }
+        ),
+        why_not_tradable="funding period mismatch",
+        replay_net_after_cost_bps=4.4,
+        replay_confidence_label="low",
+        replay_passes_min_trade_gate=False,
+        replay_summary="",
+    )
+
+    selected = observer.select_top_opportunities([probe_route, mixed_semantics_watchlist, period_mismatch_watchlist])
+    assert len(selected) == 3
+    routes = {(item.opportunity.long_exchange, item.opportunity.short_exchange) for item in selected}
+    assert ("hyperliquid", "lighter") in routes
+    assert ("okx", "lighter") in routes
+    assert ("binance", "lighter") in routes
+
+
+def test_select_top_opportunities_enforces_caps_and_filters_noise() -> None:
+    observer = OpportunityObserverService()
+    base = _build_opportunity()
+    contexts: list[OpportunityObservationContext] = []
+
+    for index in range(5):
+        contexts.append(
+            OpportunityObservationContext(
+                opportunity=base.model_copy(
+                    update={
+                        "symbol": "BTC",
+                        "long_exchange": f"long{index}",
+                        "short_exchange": "lighter",
+                        "execution_mode": "paper",
+                        "final_position_pct": 0.0,
+                        "net_edge_bps": 9.0 - index * 0.5,
+                        "opportunity_grade": "watchlist",
+                        "risk_flags": ["mixed_funding_sources"] if index < 4 else [],
+                    }
+                ),
+                why_not_tradable="",
+                replay_net_after_cost_bps=4.5 - index * 0.3,
+                replay_confidence_label="low",
+                replay_passes_min_trade_gate=False,
+                replay_summary="",
+            )
+        )
+
+    # Explicit low-value paper noise should be excluded.
+    contexts.append(
+        OpportunityObservationContext(
+            opportunity=base.model_copy(
+                update={
+                    "symbol": "ETH",
+                    "execution_mode": "paper",
+                    "final_position_pct": 0.0,
+                    "net_edge_bps": 1.5,
+                    "opportunity_grade": "watchlist",
+                    "risk_flags": [],
+                }
+            ),
+            why_not_tradable="",
+            replay_net_after_cost_bps=0.5,
+            replay_confidence_label="low",
+            replay_passes_min_trade_gate=False,
+            replay_summary="",
+        )
+    )
+
+    for index in range(10):
+        contexts.append(
+            OpportunityObservationContext(
+                opportunity=base.model_copy(
+                    update={
+                        "symbol": f"ALT{index}",
+                        "long_exchange": "binance",
+                        "short_exchange": "okx",
+                        "execution_mode": "small_probe",
+                        "final_position_pct": 0.01,
+                        "net_edge_bps": 8.0 + (index / 10),
+                        "opportunity_grade": "watchlist",
+                        "risk_flags": [],
+                    }
+                ),
+                why_not_tradable="",
+                replay_net_after_cost_bps=6.0 + (index / 10),
+                replay_confidence_label="medium",
+                replay_passes_min_trade_gate=True,
+                replay_summary="",
+            )
+        )
+
+    selected = observer.select_top_opportunities(contexts, max_global=20, max_per_symbol=3)
+    assert len(selected) == 13
+    assert sum(1 for item in selected if item.opportunity.symbol == "BTC") == 3
+    assert all(not (item.opportunity.symbol == "ETH" and item.opportunity.net_edge_bps == 1.5) for item in selected)
+
+
 def test_observe_routes_return_expected_fields(tmp_path, monkeypatch) -> None:
     store = ObservationStore(str(tmp_path / "observations.sqlite3"))
     monkeypatch.setattr("app.main.observation_store", store)

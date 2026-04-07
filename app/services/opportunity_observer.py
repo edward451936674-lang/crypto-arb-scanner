@@ -58,18 +58,12 @@ class OpportunityObserverService:
         contexts: list[OpportunityObservationContext],
         *,
         max_global: int = 10,
-        max_per_symbol: int = 4,
+        max_per_symbol: int = 3,
     ) -> list[OpportunityObservationContext]:
-        kept = [item for item in contexts if self._is_high_signal(item)]
+        kept = [item for item in contexts if not self._is_low_value_noise(item)]
         ranked = sorted(
             kept,
-            key=lambda item: (
-                bool(item.replay_passes_min_trade_gate),
-                item.opportunity.execution_mode in {"normal", "size_up", "extended_size_up", "small_probe"},
-                item.opportunity.final_position_pct,
-                item.replay_net_after_cost_bps if item.replay_net_after_cost_bps is not None else -999.0,
-                item.opportunity.net_edge_bps,
-            ),
+            key=self.score_observation_candidate,
             reverse=True,
         )
         selected: list[OpportunityObservationContext] = []
@@ -129,18 +123,52 @@ class OpportunityObserverService:
             stored_symbols=sorted({item.symbol for item in records}),
         )
 
-    def _is_high_signal(self, item: OpportunityObservationContext) -> bool:
+    @staticmethod
+    def score_observation_candidate(item: OpportunityObservationContext) -> tuple:
         opportunity = item.opportunity
-        if item.replay_passes_min_trade_gate:
+        execution_priority = {
+            "extended_size_up": 4,
+            "size_up": 4,
+            "normal": 3,
+            "small_probe": 2,
+            "paper": 1,
+        }
+        replay_net = item.replay_net_after_cost_bps if item.replay_net_after_cost_bps is not None else -999.0
+        research_value = OpportunityObserverService._has_research_value(item)
+        return (
+            execution_priority.get(opportunity.execution_mode, 0),
+            bool(item.replay_passes_min_trade_gate),
+            opportunity.net_edge_bps,
+            replay_net,
+            research_value,
+            opportunity.final_position_pct,
+            opportunity.symbol,
+            opportunity.long_exchange,
+            opportunity.short_exchange,
+        )
+
+    @staticmethod
+    def _is_low_value_noise(item: OpportunityObservationContext) -> bool:
+        opportunity = item.opportunity
+        replay_net = item.replay_net_after_cost_bps if item.replay_net_after_cost_bps is not None else -999.0
+        weak_replay = replay_net < 2.0
+        weak_edge = opportunity.net_edge_bps < 4.0
+        is_paper_zero = opportunity.execution_mode == "paper" and opportunity.final_position_pct == 0.0
+        return is_paper_zero and weak_replay and weak_edge and not OpportunityObserverService._has_research_value(item)
+
+    @staticmethod
+    def _has_research_value(item: OpportunityObservationContext) -> bool:
+        opportunity = item.opportunity
+        risk_flags = set(opportunity.risk_flags)
+        if {"mixed_funding_sources", "different_funding_periods"} & risk_flags:
             return True
-        if opportunity.execution_mode in {"small_probe", "normal", "size_up", "extended_size_up"}:
-            if opportunity.final_position_pct > 0:
-                return True
-            if opportunity.net_edge_bps >= 8.0:
-                return True
-        if opportunity.net_edge_bps >= 12.0:
+        if opportunity.data_quality_status != "healthy":
             return True
-        if item.replay_net_after_cost_bps is not None and item.replay_net_after_cost_bps >= 6.0:
+        if opportunity.funding_confidence_label in {"low", "very_low"} and opportunity.net_edge_bps >= 8.0:
+            return True
+        if opportunity.opportunity_grade == "watchlist" and opportunity.net_edge_bps >= 8.0:
+            return True
+        if item.replay_net_after_cost_bps is not None and item.replay_net_after_cost_bps >= 4.0:
             return True
         return False
 
