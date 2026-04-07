@@ -1,4 +1,5 @@
 from html import escape
+from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
@@ -67,6 +68,23 @@ OPPORTUNITY_EXECUTION_BLOCKERS = {
 }
 
 
+@dataclass(frozen=True)
+class DashboardRow:
+    opportunity: Opportunity
+    why_not_tradable: str
+    replay_net_after_cost_bps: float | None
+    replay_confidence_label: str | None
+    replay_passes_min_trade_gate: bool | None
+
+
+@dataclass(frozen=True)
+class _ScanContext:
+    requested_symbols: list[str]
+    opportunities: list[Opportunity]
+    snapshot_errors: list[object]
+    accepted_snapshots: list[MarketSnapshot]
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok", "env": settings.app_env}
@@ -80,32 +98,15 @@ async def dashboard(
     refresh_seconds: int = Query(default=15, ge=5, le=300),
 ) -> str:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
-    opportunities = await _collect_current_opportunities(requested_symbols)
+    dashboard_rows = await _build_dashboard_rows(requested_symbols)
     filtered = [
         item
-        for item in opportunities
-        if item.net_edge_bps >= min_edge_bps
-        and (execution_mode is None or item.execution_mode == execution_mode)
+        for item in dashboard_rows
+        if item.opportunity.net_edge_bps >= min_edge_bps
+        and (execution_mode is None or item.opportunity.execution_mode == execution_mode)
     ]
     options = ["paper", "small_probe", "normal", "size_up", "extended_size_up"]
-    rows = "".join(
-        (
-            "<tr>"
-            f"<td>{escape(item.symbol)}</td>"
-            f"<td>{escape(item.long_exchange)}</td>"
-            f"<td>{escape(item.short_exchange)}</td>"
-            f"<td>{item.price_spread_bps:.2f}</td>"
-            f"<td>{(item.funding_spread_bps or 0.0):.2f}</td>"
-            f"<td>{item.net_edge_bps:.2f}</td>"
-            f"<td>{escape(item.opportunity_grade)}</td>"
-            f"<td>{escape(item.execution_mode)}</td>"
-            f"<td>{item.final_position_pct:.2%}</td>"
-            f"<td>{escape(item.data_quality_status)} | {escape(', '.join(item.risk_flags[:2]) or '-')}</td>"
-            f"<td>{item.cluster_id or '-'}</td>"
-            "</tr>"
-        )
-        for item in filtered
-    )
+    rows = "".join(_render_dashboard_row(item) for item in filtered)
     select_options = "".join(
         f"<option value='{mode}' {'selected' if mode == execution_mode else ''}>{mode}</option>" for mode in options
     )
@@ -144,7 +145,8 @@ async def dashboard(
       <tr>
         <th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>price_spread_bps</th>
         <th>funding_spread_bps</th><th>estimated_net_edge_bps</th><th>opportunity_grade</th>
-        <th>execution_mode</th><th>final_position_pct</th><th>risk_flags</th><th>replay_summary</th>
+        <th>execution_mode</th><th>final_position_pct</th><th>why_not_tradable</th><th>risk_flags</th>
+        <th>replay_net_after_cost_bps</th><th>replay_confidence_label</th><th>replay_passes_min_trade_gate</th><th>replay_summary</th>
       </tr>
     </thead>
     <tbody>{rows}</tbody>
@@ -516,6 +518,15 @@ def _hydrate_execution_sizing_outputs(
 
 
 async def _build_opportunities_response(requested_symbols: list[str]) -> OpportunitiesResponse:
+    scan_context = await _build_scan_context(requested_symbols)
+    return OpportunitiesResponse(
+        requested_symbols=scan_context.requested_symbols,
+        opportunities=scan_context.opportunities,
+        snapshot_errors=scan_context.snapshot_errors,
+    )
+
+
+async def _build_scan_context(requested_symbols: list[str]) -> _ScanContext:
     market_data_service = MarketDataService(settings)
     scanner = ArbitrageScannerService()
     quality_gate = MarketDataQualityGate()
@@ -527,16 +538,117 @@ async def _build_opportunities_response(requested_symbols: list[str]) -> Opportu
         scanner.build_opportunities(accepted_snapshots),
         active_execution_policy_profile=settings.execution_policy_profile,
     )
-    return OpportunitiesResponse(
+    return _ScanContext(
         requested_symbols=market_data.requested_symbols,
         opportunities=opportunities,
         snapshot_errors=market_data.errors,
+        accepted_snapshots=accepted_snapshots,
     )
 
 
 async def _collect_current_opportunities(requested_symbols: list[str]) -> list[Opportunity]:
     response = await _build_opportunities_response(requested_symbols)
     return response.opportunities
+
+
+async def _build_dashboard_rows(requested_symbols: list[str]) -> list[DashboardRow]:
+    scan_context = await _build_scan_context(requested_symbols)
+    snapshot_lookup = _snapshot_lookup(scan_context.accepted_snapshots)
+    assumptions = ReplayAssumptions(
+        holding_mode="to_next_funding",
+        slippage_bps_per_leg=1.0,
+        extra_exit_slippage_bps_per_leg=0.5,
+        latency_decay_bps=0.2,
+        borrow_or_misc_cost_bps=0.0,
+    )
+    replay_service = OpportunityReplayService()
+
+    rows: list[DashboardRow] = []
+    for opportunity in scan_context.opportunities:
+        long_snapshot = snapshot_lookup.get((opportunity.symbol, opportunity.long_exchange.lower()))
+        short_snapshot = snapshot_lookup.get((opportunity.symbol, opportunity.short_exchange.lower()))
+        replay = (
+            replay_service.replay(opportunity, long_snapshot, short_snapshot, assumptions)
+            if long_snapshot is not None and short_snapshot is not None
+            else None
+        )
+        replay_passes_min_trade_gate = _replay_passes_min_trade_gate(opportunity, replay.net_realized_edge_bps) if replay else None
+        rows.append(
+            DashboardRow(
+                opportunity=opportunity,
+                why_not_tradable=_why_not_tradable_label(
+                    opportunity=opportunity,
+                    replay_net_after_cost_bps=(replay.net_realized_edge_bps if replay else None),
+                    replay_passes_min_trade_gate=replay_passes_min_trade_gate,
+                ),
+                replay_net_after_cost_bps=(replay.net_realized_edge_bps if replay else None),
+                replay_confidence_label=(replay.replay_confidence_label if replay else None),
+                replay_passes_min_trade_gate=replay_passes_min_trade_gate,
+            )
+        )
+    return rows
+
+
+def _render_dashboard_row(item: DashboardRow) -> str:
+    replay_net_after_cost_display = (
+        f"{item.replay_net_after_cost_bps:.2f}" if item.replay_net_after_cost_bps is not None else "N/A"
+    )
+    replay_passes_gate_display = (
+        "yes"
+        if item.replay_passes_min_trade_gate is True
+        else "no" if item.replay_passes_min_trade_gate is False else "N/A"
+    )
+    return (
+        "<tr>"
+        f"<td>{escape(item.opportunity.symbol)}</td>"
+        f"<td>{escape(item.opportunity.long_exchange)}</td>"
+        f"<td>{escape(item.opportunity.short_exchange)}</td>"
+        f"<td>{item.opportunity.price_spread_bps:.2f}</td>"
+        f"<td>{(item.opportunity.funding_spread_bps or 0.0):.2f}</td>"
+        f"<td>{item.opportunity.net_edge_bps:.2f}</td>"
+        f"<td>{escape(item.opportunity.opportunity_grade)}</td>"
+        f"<td>{escape(item.opportunity.execution_mode)}</td>"
+        f"<td>{item.opportunity.final_position_pct:.2%}</td>"
+        f"<td>{escape(item.why_not_tradable)}</td>"
+        f"<td>{escape(item.opportunity.data_quality_status)} | "
+        f"{escape(', '.join(item.opportunity.risk_flags[:2]) or '-')}</td>"
+        f"<td>{replay_net_after_cost_display}</td>"
+        f"<td>{escape(item.replay_confidence_label or 'N/A')}</td>"
+        f"<td>{replay_passes_gate_display}</td>"
+        f"<td>{item.opportunity.cluster_id or '-'}</td>"
+        "</tr>"
+    )
+
+
+def _replay_passes_min_trade_gate(opportunity: Opportunity, replay_net_after_cost_bps: float | None) -> bool:
+    if replay_net_after_cost_bps is None:
+        return False
+    min_gate_bps = 6.0 if opportunity.execution_mode in {"small_probe", "paper"} else opportunity.normal_required_edge_bps
+    return replay_net_after_cost_bps >= min_gate_bps
+
+
+def _why_not_tradable_label(
+    *,
+    opportunity: Opportunity,
+    replay_net_after_cost_bps: float | None,
+    replay_passes_min_trade_gate: bool | None,
+) -> str:
+    risk_flags = set(opportunity.risk_flags)
+    if "mixed_funding_sources" in risk_flags:
+        return "mixed funding semantics"
+    if "different_funding_periods" in risk_flags:
+        return "funding period mismatch"
+    if opportunity.data_quality_status != "healthy":
+        return "quality gate downgraded opportunity"
+    if replay_passes_min_trade_gate is False:
+        return "replay edge too weak after costs"
+    if opportunity.execution_mode == "paper":
+        return "paper-only due to risk flags" if risk_flags else "insufficient confidence for live sizing"
+    if opportunity.execution_mode == "small_probe":
+        return "small probe only"
+    if replay_net_after_cost_bps is not None and replay_net_after_cost_bps > 0:
+        return "live candidate"
+    return ""
 
 
 def _snapshot_lookup(snapshots: list[MarketSnapshot]) -> dict[tuple[str, str], MarketSnapshot]:

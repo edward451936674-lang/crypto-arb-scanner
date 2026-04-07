@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from app import main as main_module
@@ -45,10 +47,18 @@ def _opportunity(
 
 
 def test_dashboard_route_returns_html(monkeypatch) -> None:
-    async def fake_build(_: list[str]) -> OpportunitiesResponse:
-        return OpportunitiesResponse(requested_symbols=["BTC"], opportunities=[_opportunity()], snapshot_errors=[])
+    async def fake_dashboard_rows(_: list[str]) -> list[main_module.DashboardRow]:
+        return [
+            main_module.DashboardRow(
+                opportunity=_opportunity(),
+                why_not_tradable="live candidate",
+                replay_net_after_cost_bps=12.5,
+                replay_confidence_label="high",
+                replay_passes_min_trade_gate=True,
+            )
+        ]
 
-    monkeypatch.setattr(main_module, "_build_opportunities_response", fake_build)
+    monkeypatch.setattr(main_module, "_build_dashboard_rows", fake_dashboard_rows)
 
     client = TestClient(app)
     response = client.get("/dashboard")
@@ -60,6 +70,48 @@ def test_dashboard_route_returns_html(monkeypatch) -> None:
     assert "estimated_net_edge_bps" in body
     assert "opportunity_grade" in body
     assert "execution_mode" in body
+    assert "why_not_tradable" in body
+    assert "replay_net_after_cost_bps" in body
+    assert "replay_confidence_label" in body
+    assert "replay_passes_min_trade_gate" in body
+    assert "live candidate" in body
+    assert "12.50" in body
+    assert "high" in body
+    assert "yes" in body
+
+
+def test_why_not_tradable_label_scenarios() -> None:
+    mixed_funding = _opportunity(execution_mode="paper")
+    mixed_funding.risk_flags = ["mixed_funding_sources"]
+    assert (
+        main_module._why_not_tradable_label(
+            opportunity=mixed_funding,
+            replay_net_after_cost_bps=15.0,
+            replay_passes_min_trade_gate=True,
+        )
+        == "mixed funding semantics"
+    )
+
+    period_mismatch = _opportunity(execution_mode="paper")
+    period_mismatch.risk_flags = ["different_funding_periods"]
+    assert (
+        main_module._why_not_tradable_label(
+            opportunity=period_mismatch,
+            replay_net_after_cost_bps=9.0,
+            replay_passes_min_trade_gate=False,
+        )
+        == "funding period mismatch"
+    )
+
+    weak_replay = _opportunity(execution_mode="normal")
+    assert (
+        main_module._why_not_tradable_label(
+            opportunity=weak_replay,
+            replay_net_after_cost_bps=4.0,
+            replay_passes_min_trade_gate=False,
+        )
+        == "replay edge too weak after costs"
+    )
 
 
 def test_telegram_formatting_helper() -> None:
@@ -115,3 +167,41 @@ def test_alert_route_requires_telegram_config(monkeypatch) -> None:
     client = TestClient(app)
     response = client.post("/api/v1/alerts/telegram/opportunities")
     assert response.status_code == 400
+
+
+def test_build_dashboard_rows_includes_replay_details(monkeypatch) -> None:
+    market_snapshot_payload = {
+        "exchange": "binance",
+        "venue_type": "cex",
+        "base_symbol": "BTC",
+        "normalized_symbol": "BTCUSDT",
+        "instrument_id": "BTCUSDT",
+        "mark_price": 100.0,
+        "funding_rate": 0.0002,
+        "funding_rate_source": "predicted",
+        "funding_time_ms": 1_700_000_000_000,
+        "next_funding_time_ms": 1_700_000_360_000,
+        "funding_period_hours": 8,
+        "timestamp_ms": 1_700_000_000_000,
+    }
+    long_snapshot = main_module.MarketSnapshot.model_validate(market_snapshot_payload)
+    short_snapshot = main_module.MarketSnapshot.model_validate(
+        {**market_snapshot_payload, "exchange": "okx", "funding_rate": 0.0005}
+    )
+
+    async def fake_context(_: list[str]) -> main_module._ScanContext:
+        return main_module._ScanContext(
+            requested_symbols=["BTC"],
+            opportunities=[_opportunity()],
+            snapshot_errors=[],
+            accepted_snapshots=[long_snapshot, short_snapshot],
+        )
+
+    monkeypatch.setattr(main_module, "_build_scan_context", fake_context)
+
+    rows = asyncio.run(main_module._build_dashboard_rows(["BTC"]))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.replay_net_after_cost_bps is not None
+    assert row.replay_confidence_label in {"high", "medium", "low"}
+    assert row.replay_passes_min_trade_gate is not None
