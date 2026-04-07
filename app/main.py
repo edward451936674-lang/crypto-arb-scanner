@@ -47,6 +47,7 @@ from app.services.opportunity_replay import OpportunityReplayService
 from app.storage.observations import ObservationStore
 from app.services.telegram_notifier import TelegramNotifier, TelegramNotifierConfig
 from app.services.alert_memory import AlertCandidate, AlertMemoryService
+from app.services.research_summary import ResearchSummaryService
 
 settings = get_settings()
 execution_account_state_provider: ExecutionAccountStateProvider = get_execution_account_state_provider(settings)
@@ -423,6 +424,35 @@ async def get_observation_history(
 ) -> dict[str, object]:
     records = observation_store.history(symbol=symbol, limit=limit)
     return {"symbol": symbol.upper(), "count": len(records), "items": [item.model_dump() for item in records]}
+
+
+@app.get("/api/v1/research/routes")
+async def get_research_routes(
+    limit: int = Query(default=20, ge=1, le=200),
+    sort_by: str = Query(default="observation_count"),
+) -> dict[str, object]:
+    items = ResearchSummaryService(observation_store).route_summaries(limit=limit, sort_by=sort_by)
+    return {"count": len(items), "sort_by": sort_by, "items": items}
+
+
+@app.get("/api/v1/research/symbol")
+async def get_research_symbol(
+    symbol: str = Query(..., min_length=1, description="Base symbol, e.g. BTC"),
+    limit: int = Query(default=50, ge=1, le=500),
+    sort_by: str = Query(default="observation_count"),
+) -> dict[str, object]:
+    items = ResearchSummaryService(observation_store).route_summaries(limit=limit, symbol=symbol, sort_by=sort_by)
+    return {"symbol": symbol.upper(), "count": len(items), "sort_by": sort_by, "items": items}
+
+
+@app.get("/api/v1/research/why-not-breakdown")
+async def get_research_why_not_breakdown() -> dict[str, object]:
+    return ResearchSummaryService(observation_store).why_not_breakdown()
+
+
+@app.get("/api/v1/research/replay-calibration")
+async def get_research_replay_calibration(top_n: int = Query(default=10, ge=1, le=100)) -> dict[str, object]:
+    return ResearchSummaryService(observation_store).replay_calibration(top_n=top_n)
 
 
 @app.get("/api/v1/replay-preview")
