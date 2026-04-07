@@ -2,6 +2,7 @@ from html import escape
 from dataclasses import dataclass
 import hashlib
 import time
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
@@ -83,6 +84,7 @@ class DashboardRow:
     replay_net_after_cost_bps: float | None
     replay_confidence_label: str | None
     replay_passes_min_trade_gate: bool | None
+    history_hint: str
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,8 @@ async def dashboard(
 ) -> str:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
     dashboard_rows = await _build_dashboard_rows(requested_symbols)
+    recent_observations = observation_store.latest(limit=20)
+    recent_alert_events = observation_store.latest_alert_events(limit=20)
     filtered = [
         item
         for item in dashboard_rows
@@ -115,6 +119,8 @@ async def dashboard(
     ]
     options = ["paper", "small_probe", "normal", "size_up", "extended_size_up"]
     rows = "".join(_render_dashboard_row(item) for item in filtered)
+    recent_observations_rows = "".join(_render_recent_observation_row(item) for item in recent_observations)
+    recent_alert_rows = "".join(_render_recent_alert_row(item) for item in recent_alert_events)
     select_options = "".join(
         f"<option value='{mode}' {'selected' if mode == execution_mode else ''}>{mode}</option>" for mode in options
     )
@@ -130,6 +136,7 @@ async def dashboard(
     table {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
     th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
     th {{ background: #f7f7f7; }}
+    h2 {{ margin-top: 26px; }}
     .filters {{ margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }}
     input, select {{ padding: 4px; }}
   </style>
@@ -154,10 +161,30 @@ async def dashboard(
         <th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>price_spread_bps</th>
         <th>funding_spread_bps</th><th>estimated_net_edge_bps</th><th>opportunity_grade</th>
         <th>execution_mode</th><th>final_position_pct</th><th>why_not_tradable</th><th>risk_flags</th>
-        <th>replay_net_after_cost_bps</th><th>replay_confidence_label</th><th>replay_passes_min_trade_gate</th><th>replay_summary</th>
+        <th>replay_net_after_cost_bps</th><th>replay_confidence_label</th><th>replay_passes_min_trade_gate</th><th>replay_summary</th><th>history_hint</th>
       </tr>
     </thead>
     <tbody>{rows}</tbody>
+  </table>
+  <h2>Recent Observations</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>observed_at</th><th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>estimated_net_edge_bps</th>
+        <th>execution_mode</th><th>why_not_tradable</th><th>replay_net_after_cost_bps</th><th>replay_confidence_label</th>
+      </tr>
+    </thead>
+    <tbody>{recent_observations_rows or "<tr><td colspan='9'>No observations recorded yet.</td></tr>"}</tbody>
+  </table>
+  <h2>Recent Alert Events</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>sent_at</th><th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>execution_mode</th>
+        <th>final_position_pct</th><th>replay_net_after_cost_bps</th>
+      </tr>
+    </thead>
+    <tbody>{recent_alert_rows or "<tr><td colspan='7'>No alert events sent yet.</td></tr>"}</tbody>
   </table>
 </body>
 </html>
@@ -679,6 +706,8 @@ def _is_low_signal_alert_candidate(opportunity: Opportunity, context: Opportunit
 
 async def _build_dashboard_rows(requested_symbols: list[str]) -> list[DashboardRow]:
     scan_context = await _build_scan_context(requested_symbols)
+    recent_observations = observation_store.latest(limit=300)
+    route_history = _build_route_history_lookup(recent_observations)
     snapshot_lookup = _snapshot_lookup(scan_context.accepted_snapshots)
     assumptions = ReplayAssumptions(
         holding_mode="to_next_funding",
@@ -710,6 +739,7 @@ async def _build_dashboard_rows(requested_symbols: list[str]) -> list[DashboardR
                 replay_net_after_cost_bps=(replay.net_realized_edge_bps if replay else None),
                 replay_confidence_label=(replay.replay_confidence_label if replay else None),
                 replay_passes_min_trade_gate=replay_passes_min_trade_gate,
+                history_hint=_build_history_hint(opportunity, route_history),
             )
         )
     return rows
@@ -742,8 +772,103 @@ def _render_dashboard_row(item: DashboardRow) -> str:
         f"<td>{escape(item.replay_confidence_label or 'N/A')}</td>"
         f"<td>{replay_passes_gate_display}</td>"
         f"<td>{item.opportunity.cluster_id or '-'}</td>"
+        f"<td>{escape(item.history_hint)}</td>"
         "</tr>"
     )
+
+
+def _render_recent_observation_row(record: object) -> str:
+    observed_at = _format_ms_timestamp(getattr(record, "observed_at_ms", None))
+    estimated_net_edge_bps = getattr(record, "estimated_net_edge_bps", None)
+    replay_net = getattr(record, "replay_net_after_cost_bps", None)
+    return (
+        "<tr>"
+        f"<td>{observed_at}</td>"
+        f"<td>{escape(getattr(record, 'symbol', '') or '-')}</td>"
+        f"<td>{escape(getattr(record, 'long_exchange', '') or '-')}</td>"
+        f"<td>{escape(getattr(record, 'short_exchange', '') or '-')}</td>"
+        f"<td>{f'{estimated_net_edge_bps:.2f}' if isinstance(estimated_net_edge_bps, int | float) else 'N/A'}</td>"
+        f"<td>{escape(getattr(record, 'execution_mode', '') or '-')}</td>"
+        f"<td>{escape(getattr(record, 'why_not_tradable', '') or '-')}</td>"
+        f"<td>{f'{replay_net:.2f}' if isinstance(replay_net, int | float) else 'N/A'}</td>"
+        f"<td>{escape(getattr(record, 'replay_confidence_label', '') or '-')}</td>"
+        "</tr>"
+    )
+
+
+def _render_recent_alert_row(event: dict[str, object]) -> str:
+    final_position = event.get("final_position_pct")
+    replay_net = event.get("replay_net_after_cost_bps")
+    return (
+        "<tr>"
+        f"<td>{_format_ms_timestamp(event.get('sent_at_ms'))}</td>"
+        f"<td>{escape(str(event.get('symbol') or '-'))}</td>"
+        f"<td>{escape(str(event.get('long_exchange') or '-'))}</td>"
+        f"<td>{escape(str(event.get('short_exchange') or '-'))}</td>"
+        f"<td>{escape(str(event.get('execution_mode') or '-'))}</td>"
+        f"<td>{f'{float(final_position):.2%}' if isinstance(final_position, int | float) else 'N/A'}</td>"
+        f"<td>{f'{float(replay_net):.2f}' if isinstance(replay_net, int | float) else 'N/A'}</td>"
+        "</tr>"
+    )
+
+
+def _format_ms_timestamp(timestamp_ms: object) -> str:
+    if not isinstance(timestamp_ms, int | float):
+        return "N/A"
+    return datetime.fromtimestamp(float(timestamp_ms) / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _route_identity(symbol: str, long_exchange: str, short_exchange: str, cluster_id: str | None) -> str:
+    if cluster_id:
+        return f"cluster:{cluster_id}"
+    return f"route:{symbol.upper()}:{long_exchange.lower()}->{short_exchange.lower()}"
+
+
+def _route_key_identity(symbol: str, long_exchange: str, short_exchange: str) -> str:
+    return f"route:{symbol.upper()}:{long_exchange.lower()}->{short_exchange.lower()}"
+
+
+def _build_route_history_lookup(records: list[object]) -> dict[str, list[object]]:
+    history: dict[str, list[object]] = {}
+    for record in records:
+        cluster_key = _route_identity(
+            symbol=getattr(record, "symbol", ""),
+            long_exchange=getattr(record, "long_exchange", ""),
+            short_exchange=getattr(record, "short_exchange", ""),
+            cluster_id=getattr(record, "cluster_id", None),
+        )
+        route_key = _route_key_identity(
+            symbol=getattr(record, "symbol", ""),
+            long_exchange=getattr(record, "long_exchange", ""),
+            short_exchange=getattr(record, "short_exchange", ""),
+        )
+        history.setdefault(cluster_key, []).append(record)
+        if route_key != cluster_key:
+            history.setdefault(route_key, []).append(record)
+    return history
+
+
+def _build_history_hint(opportunity: Opportunity, route_history: dict[str, list[object]]) -> str:
+    key = _route_identity(
+        symbol=opportunity.symbol,
+        long_exchange=opportunity.long_exchange,
+        short_exchange=opportunity.short_exchange,
+        cluster_id=opportunity.cluster_id,
+    )
+    matches = route_history.get(key, [])
+    if not matches:
+        matches = route_history.get(
+            _route_key_identity(opportunity.symbol, opportunity.long_exchange, opportunity.short_exchange),
+            [],
+        )
+    if not matches:
+        return "new route"
+    latest = matches[0]
+    previous_edge = getattr(latest, "estimated_net_edge_bps", None)
+    previous_mode = getattr(latest, "execution_mode", None)
+    edge_display = f"{previous_edge:.2f} bps" if isinstance(previous_edge, int | float) else "N/A"
+    mode_display = previous_mode or "N/A"
+    return f"seen {len(matches)}x recently | prev edge {edge_display} | prev mode {mode_display}"
 
 
 def _replay_passes_min_trade_gate(opportunity: Opportunity, replay_net_after_cost_bps: float | None) -> bool:
