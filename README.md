@@ -1,204 +1,335 @@
-# crypto-arb-scanner
+# Crypto Arb Scanner
 
-一个面向 **跨 CEX / Perp DEX 价差与资金费率套利** 的 FastAPI 项目骨架。
+一个面向 **CEX / Perp DEX 跨交易所套利研究** 的 FastAPI 项目。
 
-当前 V1 目标不是自动下单，而是先把 **四个交易所的永续合约市场数据采集** 跑通，为后续的机会扫描器、告警和模拟交易打基础。
+当前项目重点不是自动交易，而是构建一个稳定的 **opportunity discovery / replay / execution sizing** 研究框架，用于持续发现、解释、评估跨交易所永续合约套利机会。
 
-目前接入：
+---
 
-- Binance USDⓈ-M Futures
-- OKX Perpetual Swaps
-- Hyperliquid Perps
-- Lighter Perps
+## Project Status
 
-## 当前能力
+当前项目处于：
 
-- 提供统一的 `MarketSnapshot` 数据模型
-- 通过 `/api/v1/snapshots` 拉取 `BTC / ETH / SOL` 的多交易所数据
-- 返回：
-  - 标记价格 / mark price
-  - 指数价格 / index price（若交易所提供）
-  - 资金费率 / funding rate
-  - 资金费率语义标记（current / latest_reported / estimated_current 等）
-  - 原始交易所 payload（便于你后面继续扩展）
-- 对交易所错误做隔离：某一家失败不会让全部接口直接挂掉
+**Research / Opportunity Discovery Stage**
 
-## 为什么 funding_rate_source 很重要
+已具备：
 
-四家交易所在“资金费率”字段上的语义并不完全相同：
+- 多交易所永续行情抓取与归一化
+- funding / mark / index / open interest 等核心字段标准化
+- data quality gating
+- 跨交易所套利机会扫描
+- replay preview / profile compare
+- execution sizing / account-state-aware 评估
 
-- Binance `premiumIndex` 返回 `lastFundingRate`
-- OKX 最理想是走 `funding-rate` WebSocket，若失败则 fallback 到 `funding-rate-history`
-- Hyperliquid `metaAndAssetCtxs` 里的 `funding` 是当前 8h funding
-- Lighter `market_stats` 里的 `current_funding_rate` 是“下一次 funding 的估计值”，`funding_rate` 是最近一次已发生 funding
+当前**不包含自动下单执行**，也不以 production trading bot 为目标。
 
-所以代码里保留了 `funding_rate_source`，避免你后面做套利计算时把不同语义的数据硬混在一起。
+---
 
-## 项目结构
+## Supported Venues
 
-```text
-crypto-arb-scanner/
-  app/
-    main.py
-    core/
-      config.py
-      symbols.py
-    models/
-      market.py
-    exchanges/
-      base.py
-      binance.py
-      okx.py
-      hyperliquid.py
-      lighter.py
-    services/
-      market_data.py
-  tests/
-    test_symbols.py
-  .env.example
-  pyproject.toml
-  README.md
-```
+当前已接入的交易所：
 
-## Local Development Environment
+- Binance
+- OKX
+- Hyperliquid
+- Lighter
 
-Recommended local setup on macOS:
+---
 
-- Python 3.11
-- virtualenv under `.venv`
-- start Uvicorn with the asyncio loop
+## Core APIs
 
-Why:
+### `GET /api/v1/snapshots`
+返回多交易所归一化后的市场快照。
 
-- local development has been more stable with Python 3.11 than Python 3.13
-- using the asyncio loop avoids local websocket/runtime compatibility issues seen with newer runtime combinations
+典型字段包括：
 
-### Install Python 3.11 on macOS
-
-```bash
-brew install python@3.11
-python3.11 --version
-```
-
-### Local setup and startup (macOS recommended)
-
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-cp .env.example .env
-python -m uvicorn app.main:app --reload --loop asyncio
-```
-
-## Proxy / SOCKS Support
-
-If your environment sets `ALL_PROXY` to a `socks5://` or `socks5h://` proxy, HTTPX requires SOCKS support.
-
-This project now includes SOCKS support via dependencies (`httpx[socks]`).
-
-If you still see:
-
-`Using SOCKS proxy, but the 'socksio' package is not installed`
-
-install explicitly with:
-
-```bash
-pip install "httpx[socks]"
-```
-
-Example proxy environment variables:
-
-```bash
-export HTTP_PROXY=http://127.0.0.1:9098
-export HTTPS_PROXY=http://127.0.0.1:9098
-export ALL_PROXY=socks5h://127.0.0.1:9099
-export NO_PROXY=127.0.0.1,localhost
-export no_proxy=127.0.0.1,localhost
-```
-
-## API
-
-### 健康检查
-
-```bash
-curl http://127.0.0.1:8000/healthz
-```
-
-### 获取快照
-
-```bash
-curl "http://127.0.0.1:8000/api/v1/snapshots?symbols=BTC,ETH,SOL"
-```
-
-### 查看支持的 symbol
-
-```bash
-curl http://127.0.0.1:8000/api/v1/meta
-```
-
-## 设计说明
-
-### 1. 为什么 Binance 用 REST
-
-V1 先用 `/fapi/v1/premiumIndex`，因为它一条接口就能拿到：
-
-- mark price
-- index price
-- latest reported funding
-- next funding time
-
-对原型阶段最省心。
-
-### 2. 为什么 OKX 同时保留 REST + WS 逻辑
-
-OKX 的 mark price 很适合走 REST；资金费率更适合走 `funding-rate` 公共 WebSocket。
-
-当前代码逻辑：
-
-- 先用 REST 拿 mark price
-- 再尝试用 WS 拿 current funding / next funding time
-- 如果 WS 不可用，则 fallback 到 `funding-rate-history`
-
-这样你在代理环境、区域环境下也更容易先把原型跑起来。
-
-### 3. 为什么 Hyperliquid 用 `metaAndAssetCtxs`
-
-因为这一条请求能同时拿到 universe 元数据和 asset contexts，后者包含：
-
-- mark price
-- oracle price
-- funding
-- open interest
-
-适合做统一快照层。
-
-### 4. 为什么 Lighter 用 read-only WebSocket
-
-Lighter 的 `market_stats` WebSocket 直接给：
-
+- exchange
+- venue_type
+- base_symbol
+- normalized_symbol
+- instrument_id
 - mark_price
 - index_price
-- current_funding_rate
+- last_price
 - funding_rate
-- funding_timestamp
+- funding_rate_source
+- funding_time_ms
+- next_funding_time_ms
+- funding_period_hours
+- hourly_funding_rate
+- hourly_funding_rate_bps
+- open_interest_usd
+- quote_volume_24h_usd
+- data_quality_status
+- data_quality_flags
+- raw
 
-而且官方明确支持 `?readonly=true` 的只读连接，对受限地区更友好。
+---
 
-## 下一步建议
+### `GET /api/v1/opportunities`
+基于当前 snapshots 扫描跨交易所套利机会。
 
-建议你下一轮直接做：
+输出会综合考虑：
 
-1. `Opportunity` 数据模型
-2. 扫描逻辑：
-   - 同标的跨 venue 价差
-   - funding spread
-   - fee/slippage 估算
-3. 一个 `/api/v1/opportunities` 接口
-4. 再加 Telegram 告警
+- 价差
+- funding spread
+- fee assumptions
+- data quality
+- risk flags
+- conviction / score
+- execution sizing inputs
 
-## 官方文档（便于继续扩展）
+---
 
-- Binance Futures REST docs: https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Mark-Price
-- OKX API docs: https://app.okx.com/docs-v5/en/
-- Hyperliquid info endpoint docs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals
-- Lighter API docs: https://apidocs.lighter.xyz
+### `GET /api/v1/replay-preview`
+对机会进行 replay 预览，用于研究假设下的机会质量与成本后表现。
+
+---
+
+### `GET /api/v1/replay-profile-compare`
+比较不同 replay / execution profile 下，同一机会的结果差异。
+
+---
+
+### `GET /api/v1/meta`
+返回系统元信息、支持的交易所、支持的 symbol、配置概览等。
+
+---
+
+## Architecture Overview
+
+项目当前大致分为以下几层：
+
+### 1. Exchange Adapters
+位于 `app/exchanges/`
+
+职责：
+
+- 调用各交易所 REST / WebSocket 数据源
+- 处理 symbol 差异
+- 提取 funding / mark / index / volume / OI 等字段
+- 保留原始 payload 便于调试
+
+---
+
+### 2. Normalized Market Snapshot Layer
+位于 `app/models/market.py`
+
+核心对象是 `MarketSnapshot`，它是整个项目的统一市场数据模型。
+
+设计目标：
+
+- 屏蔽不同交易所字段差异
+- 明确 funding 字段语义
+- 支持 data quality 标记
+- 便于 scanner / replay / sizing 共用
+
+---
+
+### 3. Opportunity Scanner
+主要位于 `app/services/arbitrage_scanner.py`
+
+职责：
+
+- 按 symbol 聚合多交易所快照
+- 两两比较 exchange pair
+- 计算 price spread / funding spread / net edge
+- 引入 fee、quality gate、risk flags
+- 产出候选套利机会
+
+---
+
+### 4. Replay Layer
+主要位于 `app/services/opportunity_replay.py`
+
+职责：
+
+- 对候选机会做 replay preview
+- 评估在给定假设下的成本后表现
+- 支持 profile compare
+- 帮助判断“机会看起来存在”与“机会实际可研究/可执行”之间的差异
+
+---
+
+### 5. Execution Policy / Account-State Layer
+主要位于：
+
+- `app/services/execution_sizing_policy.py`
+- `app/services/execution_account_state.py`
+
+职责：
+
+- 根据账户状态、风险参数、profile 评估机会的可执行性
+- 决定 execution mode
+- 给出 final position sizing / leverage-aware 约束结果
+
+---
+
+### 6. Data Quality Layer
+主要位于：
+
+- `app/services/data_quality_gate.py`
+- `app/services/data_quality_rules.py`
+
+职责：
+
+- 对 market snapshots 和 opportunities 做质量校验
+- 标记 degraded / missing / stale / inconsistent 数据
+- 防止低质量数据直接进入高置信度机会结果
+
+---
+
+## Repository Structure
+
+```text
+app/
+  core/
+  exchanges/
+  models/
+  services/
+  main.py
+
+tests/
+
+AGENTS.md
+README.md
+pyproject.toml
+test_after_codex.sh
+Local Development
+Python Version
+
+推荐使用：
+
+Python 3.11
+
+不建议使用过新的 Python 版本做主开发环境，以减少依赖兼容问题。
+
+Create Virtual Environment
+python3.11 -m venv .venv
+source .venv/bin/activate
+Install Dependencies
+pip install -e .
+Proxy / Network Notes
+
+项目依赖外部交易所 API，本地开发通常需要代理环境。
+
+当前推荐方式：
+
+使用本地代理客户端
+允许脚本自动读取系统代理或 fallback 端口
+通过 certifi 提供稳定的 CA bundle
+
+如果你使用本项目自带脚本，通常无需手动反复配置代理环境变量。
+
+Recommended Workflow After Codex Changes
+
+每次 Codex 或 GitHub 上有新改动后，推荐直接运行：
+
+./test_after_codex.sh
+
+该脚本负责：
+
+拉取 main 最新代码
+激活虚拟环境
+自动检测代理
+按需安装依赖
+运行测试
+启动本地 FastAPI 服务
+
+如果成功，你会看到本地服务运行在：
+
+http://127.0.0.1:8000
+
+Swagger 文档地址：
+
+http://127.0.0.1:8000/docs
+Running the API Manually
+
+如果你不想走脚本，也可以手动运行：
+
+source .venv/bin/activate
+uvicorn app.main:app --reload
+Testing
+
+运行测试：
+
+pytest -q
+
+当前项目应保持：
+
+全量测试通过
+API 可启动
+核心 endpoints 可访问
+What This Project Is Not
+
+当前项目不是：
+
+自动下单系统
+production-ready execution bot
+高频撮合系统
+完整回测平台
+
+当前目标是：
+
+持续发现套利机会
+解释机会质量
+评估 replay 表现
+判断执行可行性
+为后续 observation / dashboard / alerting 打基础
+Current Roadmap
+
+下一阶段重点不是继续横向堆功能，而是补上研究闭环。
+
+Priority 1: Observation / Persistence Layer
+
+把当前一次性计算结果沉淀下来，形成历史样本。
+
+计划内容：
+
+opportunity observation persistence
+历史记录查询
+route / symbol 级别研究接口
+可持续积累的研究样本
+Priority 2: Research Summary APIs
+
+将 scanner / replay / sizing 的结果做聚合分析。
+
+计划内容：
+
+最近 24h 机会数
+replay 通过率
+quality gate 拦截分布
+profile compare summary
+route-level statistics
+Priority 3: Dashboard / Alerting
+
+在有 observation 历史数据之后，增加：
+
+dashboard
+Telegram / Discord alerting
+高频 route 监控
+去重告警
+Priority 4: Execution
+
+只有在 observation / replay / sizing / quality gate 都稳定之后，才考虑更进一步的执行链路。
+
+Design Principles
+保持不同交易所差异显式化，而不是过度隐藏
+funding 语义必须谨慎归一化
+保留 raw payload 便于调试
+允许 partial success，不因单个交易所失败而让整次请求失败
+研究优先于执行
+小步迭代，先做可验证的能力
+Notes for Coding Agents
+
+请优先阅读：
+
+AGENTS.md
+
+在做修改时遵循：
+
+尽量小改动
+不重写无关模块
+不虚构不存在的功能
+不提前引入 auto-trading
+保持现有 API 行为稳定
