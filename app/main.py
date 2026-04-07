@@ -1,6 +1,8 @@
+from html import escape
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
 from app.core.config import get_settings
@@ -37,6 +39,7 @@ from app.services.execution_account_state import (
 )
 from app.services.market_data import MarketDataService
 from app.services.opportunity_replay import OpportunityReplayService
+from app.services.telegram_notifier import TelegramNotifier, TelegramNotifierConfig
 
 settings = get_settings()
 execution_account_state_provider: ExecutionAccountStateProvider = get_execution_account_state_provider(settings)
@@ -67,6 +70,145 @@ OPPORTUNITY_EXECUTION_BLOCKERS = {
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok", "env": settings.app_env}
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(
+    symbols: str | None = Query(default=None),
+    min_edge_bps: float = Query(default=0.0),
+    execution_mode: str | None = Query(default=None),
+    refresh_seconds: int = Query(default=15, ge=5, le=300),
+) -> str:
+    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
+    opportunities = await _collect_current_opportunities(requested_symbols)
+    filtered = [
+        item
+        for item in opportunities
+        if item.net_edge_bps >= min_edge_bps
+        and (execution_mode is None or item.execution_mode == execution_mode)
+    ]
+    options = ["paper", "small_probe", "normal", "size_up", "extended_size_up"]
+    rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(item.symbol)}</td>"
+            f"<td>{escape(item.long_exchange)}</td>"
+            f"<td>{escape(item.short_exchange)}</td>"
+            f"<td>{item.price_spread_bps:.2f}</td>"
+            f"<td>{(item.funding_spread_bps or 0.0):.2f}</td>"
+            f"<td>{item.net_edge_bps:.2f}</td>"
+            f"<td>{escape(item.opportunity_grade)}</td>"
+            f"<td>{escape(item.execution_mode)}</td>"
+            f"<td>{item.final_position_pct:.2%}</td>"
+            f"<td>{escape(item.data_quality_status)} | {escape(', '.join(item.risk_flags[:2]) or '-')}</td>"
+            f"<td>{item.cluster_id or '-'}</td>"
+            "</tr>"
+        )
+        for item in filtered
+    )
+    select_options = "".join(
+        f"<option value='{mode}' {'selected' if mode == execution_mode else ''}>{mode}</option>" for mode in options
+    )
+    return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="refresh" content="{refresh_seconds}">
+  <title>Crypto Arb Dashboard</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 20px; color: #222; }}
+    table {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
+    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+    th {{ background: #f7f7f7; }}
+    .filters {{ margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }}
+    input, select {{ padding: 4px; }}
+  </style>
+</head>
+<body>
+  <h1>Live Opportunities Dashboard</h1>
+  <form method="get" class="filters">
+    <label>symbol <input name="symbols" value="{escape(','.join(requested_symbols))}" /></label>
+    <label>min edge bps <input name="min_edge_bps" type="number" step="0.1" value="{min_edge_bps}" /></label>
+    <label>execution mode
+      <select name="execution_mode">
+        <option value="">all</option>
+        {select_options}
+      </select>
+    </label>
+    <label>refresh sec <input name="refresh_seconds" type="number" min="5" max="300" value="{refresh_seconds}" /></label>
+    <button type="submit">Apply</button>
+  </form>
+  <table>
+    <thead>
+      <tr>
+        <th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>price_spread_bps</th>
+        <th>funding_spread_bps</th><th>estimated_net_edge_bps</th><th>opportunity_grade</th>
+        <th>execution_mode</th><th>final_position_pct</th><th>risk_flags</th><th>replay_summary</th>
+      </tr>
+    </thead>
+    <tbody>{rows}</tbody>
+  </table>
+</body>
+</html>
+"""
+
+
+@app.post("/api/v1/alerts/telegram/opportunities")
+async def alert_telegram_opportunities(
+    symbols: str | None = Query(default=None),
+    min_net_edge_bps: float = Query(default=15.0),
+    top_n: int = Query(default=5, ge=1, le=20),
+) -> dict[str, object]:
+    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
+    opportunities = await _collect_current_opportunities(requested_symbols)
+    notifier = TelegramNotifier(
+        TelegramNotifierConfig(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+        )
+    )
+    if not notifier.is_configured:
+        raise HTTPException(status_code=400, detail="telegram_not_configured")
+
+    evaluated_count = len(opportunities)
+    sent_routes: list[str] = []
+    skipped: list[dict[str, str]] = []
+    deduped: list[Opportunity] = []
+    seen_routes: set[str] = set()
+    for item in opportunities:
+        route = f"{item.symbol}:{item.long_exchange}->{item.short_exchange}"
+        if route in seen_routes:
+            skipped.append({"route": route, "reason": "duplicate_route"})
+            continue
+        seen_routes.add(route)
+        deduped.append(item)
+
+    filtered: list[Opportunity] = []
+    for item in deduped:
+        route = f"{item.symbol}:{item.long_exchange}->{item.short_exchange}"
+        if item.execution_mode in {"paper", "small_probe"}:
+            skipped.append({"route": route, "reason": "non_live_execution_mode"})
+            continue
+        if item.net_edge_bps < min_net_edge_bps:
+            skipped.append({"route": route, "reason": "below_min_net_edge"})
+            continue
+        if item.data_quality_status not in {"healthy", "degraded"}:
+            skipped.append({"route": route, "reason": "poor_data_quality"})
+            continue
+        filtered.append(item)
+
+    for item in filtered[:top_n]:
+        route = f"{item.symbol}:{item.long_exchange}->{item.short_exchange}"
+        await notifier.send_text(TelegramNotifier.format_opportunity_alert(item.model_dump()))
+        sent_routes.append(route)
+
+    return {
+        "evaluated": evaluated_count,
+        "sent": len(sent_routes),
+        "sent_routes": sent_routes,
+        "skipped": skipped,
+    }
 
 
 @app.get("/api/v1/meta")
@@ -132,25 +274,14 @@ async def get_opportunities(
     )
 ) -> dict[str, object]:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
-    market_data_service = MarketDataService(settings)
-    scanner = ArbitrageScannerService()
-    quality_gate = MarketDataQualityGate()
-
     try:
-        market_data = await market_data_service.fetch_snapshots(requested_symbols)
+        opportunities_response = await _build_opportunities_response(requested_symbols)
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    quality_result = quality_gate.evaluate(market_data.snapshots)
-    accepted_snapshots = quality_result.accepted_snapshots
-
     response = OpportunitiesResponse(
-        requested_symbols=market_data.requested_symbols,
-        opportunities=_hydrate_execution_sizing_outputs(
-            scanner.build_opportunities(accepted_snapshots),
-            active_execution_policy_profile=settings.execution_policy_profile,
-        ),
-        snapshot_errors=market_data.errors,
+        requested_symbols=opportunities_response.requested_symbols,
+        opportunities=opportunities_response.opportunities,
+        snapshot_errors=opportunities_response.snapshot_errors,
     )
     return response.model_dump()
 
@@ -382,6 +513,30 @@ def _hydrate_execution_sizing_outputs(
             )
         )
     return hydrated
+
+
+async def _build_opportunities_response(requested_symbols: list[str]) -> OpportunitiesResponse:
+    market_data_service = MarketDataService(settings)
+    scanner = ArbitrageScannerService()
+    quality_gate = MarketDataQualityGate()
+
+    market_data = await market_data_service.fetch_snapshots(requested_symbols)
+    quality_result = quality_gate.evaluate(market_data.snapshots)
+    accepted_snapshots = quality_result.accepted_snapshots
+    opportunities = _hydrate_execution_sizing_outputs(
+        scanner.build_opportunities(accepted_snapshots),
+        active_execution_policy_profile=settings.execution_policy_profile,
+    )
+    return OpportunitiesResponse(
+        requested_symbols=market_data.requested_symbols,
+        opportunities=opportunities,
+        snapshot_errors=market_data.errors,
+    )
+
+
+async def _collect_current_opportunities(requested_symbols: list[str]) -> list[Opportunity]:
+    response = await _build_opportunities_response(requested_symbols)
+    return response.opportunities
 
 
 def _snapshot_lookup(snapshots: list[MarketSnapshot]) -> dict[tuple[str, str], MarketSnapshot]:
