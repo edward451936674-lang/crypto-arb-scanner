@@ -46,7 +46,7 @@ def _record(
             "funding_confidence_label": funding_confidence_label,
             "conviction_label": conviction_label,
             "opportunity_type": opportunity_type,
-            "is_test": is_test,
+            "test": is_test,
         },
     )
 
@@ -389,7 +389,7 @@ def test_opportunities_endpoint_dashboard_scenario_with_test_snapshots(tmp_path,
     assert "BTC" in captured.out
 
 
-def test_opportunities_endpoint_parses_is_test_string_flags(tmp_path, monkeypatch) -> None:
+def test_opportunities_endpoint_parses_test_string_flags(tmp_path, monkeypatch) -> None:
     store = ObservationStore(str(tmp_path / "observations.sqlite3"))
     btc = _record(
         symbol="BTC",
@@ -409,8 +409,8 @@ def test_opportunities_endpoint_parses_is_test_string_flags(tmp_path, monkeypatc
         estimated_net_edge_bps=10,
         is_test=True,
     )
-    btc.raw_opportunity_json["is_test"] = "false"
-    eth.raw_opportunity_json["is_test"] = "true"
+    btc.raw_opportunity_json["test"] = "false"
+    eth.raw_opportunity_json["test"] = "true"
     store.insert_many([btc, eth])
     monkeypatch.setattr("app.main.observation_store", store)
     client = TestClient(app)
