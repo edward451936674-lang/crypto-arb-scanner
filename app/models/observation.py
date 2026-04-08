@@ -10,6 +10,9 @@ class ObservationRecord(BaseModel):
     cluster_id: str
     long_exchange: str
     short_exchange: str
+    price_spread_bps: float | None = None
+    funding_spread_bps: float | None = None
+    risk_adjusted_edge_bps: float | None = None
     estimated_net_edge_bps: float | None = None
     opportunity_grade: str | None = None
     execution_mode: str | None = None

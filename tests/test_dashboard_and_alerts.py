@@ -50,103 +50,55 @@ def _opportunity(
 
 
 def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
-    async def fake_dashboard_rows(_: list[str]) -> list[main_module.DashboardRow]:
+    async def fake_opportunities(**_: object) -> list[dict[str, object]]:
         return [
-            main_module.DashboardRow(
-                opportunity=_opportunity(),
-                why_not_tradable="live candidate",
-                replay_net_after_cost_bps=12.5,
-                replay_confidence_label="high",
-                replay_passes_min_trade_gate=True,
-                history_hint="seen 3x recently",
-            )
+            {
+                "rank": 1,
+                "symbol": "BTC",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 5.0,
+                "funding_spread_bps": 2.0,
+                "risk_adjusted_edge_bps": 20.0,
+                "replay_net_after_cost_bps": 12.5,
+                "estimated_net_edge_bps": 14.0,
+                "opportunity_type": "tradable",
+                "route_key": "BTC:binance->okx",
+                "is_test": False,
+            },
         ]
 
-    monkeypatch.setattr(main_module, "_build_dashboard_rows", fake_dashboard_rows)
+    monkeypatch.setattr(main_module, "get_opportunities", fake_opportunities)
     monkeypatch.setattr(main_module, "observation_store", ObservationStore(str(tmp_path / "dashboard.sqlite3")))
 
     client = TestClient(app)
-    response = client.get("/dashboard")
+    response = client.get("/dashboard", params={"top_n": 5, "only_actionable": True})
 
     assert response.status_code == 200
     body = response.text
     assert "symbol" in body
     assert "long_exchange" in body
     assert "estimated_net_edge_bps" in body
-    assert "opportunity_grade" in body
-    assert "execution_mode" in body
-    assert "why_not_tradable" in body
+    assert "risk_adjusted_edge_bps" in body
+    assert "opportunity_type" in body
+    assert "route_key" in body
+    assert "is_test" in body
     assert "replay_net_after_cost_bps" in body
-    assert "replay_confidence_label" in body
-    assert "replay_passes_min_trade_gate" in body
-    assert "Recent Observations" in body
-    assert "Recent Alert Events" in body
-    assert "live candidate" in body
     assert "12.50" in body
-    assert "high" in body
-    assert "yes" in body
-    assert "seen 3x recently" in body
-    assert "No observations recorded yet." in body
-    assert "No alert events sent yet." in body
+    assert "BTC:binance-&gt;okx" in body
+    assert "No opportunities." not in body
 
 
-def test_dashboard_renders_recent_history_sections(monkeypatch, tmp_path) -> None:
-    store = ObservationStore(str(tmp_path / "history.sqlite3"))
-    store.insert_many(
-        [
-            main_module.opportunity_observer.to_observation_records(
-                [
-                    OpportunityObservationContext(
-                        opportunity=_opportunity(),
-                        why_not_tradable="small probe only",
-                        replay_net_after_cost_bps=9.5,
-                        replay_confidence_label="medium",
-                        replay_passes_min_trade_gate=True,
-                        replay_summary="ok",
-                    )
-                ],
-                observed_at_ms=1_700_000_000_000,
-            )[0]
-        ]
-    )
-    store.insert_alert_event(
-        sent_at_ms=1_700_000_010_000,
-        dedupe_identity="route:BTC:binance->okx",
-        cluster_id=None,
-        route_key="BTC:binance->okx",
-        symbol="BTC",
-        long_exchange="binance",
-        short_exchange="okx",
-        execution_mode="normal",
-        final_position_pct=0.03,
-        replay_net_after_cost_bps=10.2,
-        replay_passes_min_trade_gate=True,
-        message_hash="abc",
-    )
+def test_dashboard_shows_empty_state_when_no_opportunities(monkeypatch) -> None:
+    async def fake_opportunities(**_: object) -> list[dict[str, object]]:
+        return []
 
-    async def fake_dashboard_rows(_: list[str]) -> list[main_module.DashboardRow]:
-        return [
-            main_module.DashboardRow(
-                opportunity=_opportunity(),
-                why_not_tradable="live candidate",
-                replay_net_after_cost_bps=12.5,
-                replay_confidence_label="high",
-                replay_passes_min_trade_gate=True,
-                history_hint="seen 1x recently | prev edge 24.00 bps | prev mode normal",
-            )
-        ]
-
-    monkeypatch.setattr(main_module, "_build_dashboard_rows", fake_dashboard_rows)
-    monkeypatch.setattr(main_module, "observation_store", store)
-
+    monkeypatch.setattr(main_module, "get_opportunities", fake_opportunities)
     client = TestClient(app)
     response = client.get("/dashboard")
     assert response.status_code == 200
     body = response.text
-    assert "small probe only" in body
-    assert "medium" in body
-    assert "2023-11-14" in body
-    assert "10.20" in body
+    assert "No opportunities." in body
 
 
 def test_why_not_tradable_label_scenarios() -> None:
