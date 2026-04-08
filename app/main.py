@@ -24,6 +24,7 @@ from app.models.market import (
     ReplayPreviewItem,
     ReplayPreviewResponse,
 )
+from app.models.observation import ObservationRecord
 from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.data_quality_gate import MarketDataQualityGate
 from app.services.execution_sizing_policy import (
@@ -105,27 +106,21 @@ async def healthz() -> dict[str, str]:
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     symbols: str | None = Query(default=None),
-    min_edge_bps: float = Query(default=0.0),
-    execution_mode: str | None = Query(default=None),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    dedupe_by_route: bool = Query(default=True),
     refresh_seconds: int = Query(default=15, ge=5, le=300),
 ) -> str:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
-    dashboard_rows = await _build_dashboard_rows(requested_symbols)
-    recent_observations = observation_store.latest(limit=20)
-    recent_alert_events = observation_store.latest_alert_events(limit=20)
-    filtered = [
-        item
-        for item in dashboard_rows
-        if item.opportunity.net_edge_bps >= min_edge_bps
-        and (execution_mode is None or item.opportunity.execution_mode == execution_mode)
-    ]
-    options = ["paper", "small_probe", "normal", "size_up", "extended_size_up"]
-    rows = "".join(_render_dashboard_row(item) for item in filtered)
-    recent_observations_rows = "".join(_render_recent_observation_row(item) for item in recent_observations)
-    recent_alert_rows = "".join(_render_recent_alert_row(item) for item in recent_alert_events)
-    select_options = "".join(
-        f"<option value='{mode}' {'selected' if mode == execution_mode else ''}>{mode}</option>" for mode in options
+    final_opportunities = await get_opportunities(
+        symbols=",".join(requested_symbols),
+        top_n=top_n,
+        only_actionable=only_actionable,
+        dedupe_by_route=dedupe_by_route,
     )
+    rows = "".join(_render_dashboard_opportunity_row(item) for item in final_opportunities)
+    only_actionable_checked = "checked" if only_actionable else ""
+    dedupe_by_route_checked = "checked" if dedupe_by_route else ""
     return f"""
 <!doctype html>
 <html>
@@ -147,46 +142,21 @@ async def dashboard(
   <h1>Live Opportunities Dashboard</h1>
   <form method="get" class="filters">
     <label>symbol <input name="symbols" value="{escape(','.join(requested_symbols))}" /></label>
-    <label>min edge bps <input name="min_edge_bps" type="number" step="0.1" value="{min_edge_bps}" /></label>
-    <label>execution mode
-      <select name="execution_mode">
-        <option value="">all</option>
-        {select_options}
-      </select>
-    </label>
+    <label>top n <input name="top_n" type="number" min="1" max="500" value="{top_n}" /></label>
+    <label>only actionable <input name="only_actionable" type="checkbox" value="true" {only_actionable_checked} /></label>
+    <label>dedupe by route <input name="dedupe_by_route" type="checkbox" value="true" {dedupe_by_route_checked} /></label>
     <label>refresh sec <input name="refresh_seconds" type="number" min="5" max="300" value="{refresh_seconds}" /></label>
     <button type="submit">Apply</button>
   </form>
   <table>
     <thead>
       <tr>
-        <th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>price_spread_bps</th>
-        <th>funding_spread_bps</th><th>estimated_net_edge_bps</th><th>opportunity_grade</th>
-        <th>execution_mode</th><th>final_position_pct</th><th>why_not_tradable</th><th>risk_flags</th>
-        <th>replay_net_after_cost_bps</th><th>replay_confidence_label</th><th>replay_passes_min_trade_gate</th><th>replay_summary</th><th>history_hint</th>
+        <th>rank</th><th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>price_spread_bps</th>
+        <th>funding_spread_bps</th><th>risk_adjusted_edge_bps</th><th>replay_net_after_cost_bps</th>
+        <th>estimated_net_edge_bps</th><th>opportunity_type</th><th>route_key</th><th>is_test</th>
       </tr>
     </thead>
-    <tbody>{rows}</tbody>
-  </table>
-  <h2>Recent Observations</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>observed_at</th><th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>estimated_net_edge_bps</th>
-        <th>execution_mode</th><th>why_not_tradable</th><th>replay_net_after_cost_bps</th><th>replay_confidence_label</th>
-      </tr>
-    </thead>
-    <tbody>{recent_observations_rows or "<tr><td colspan='9'>No observations recorded yet.</td></tr>"}</tbody>
-  </table>
-  <h2>Recent Alert Events</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>sent_at</th><th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>execution_mode</th>
-        <th>final_position_pct</th><th>replay_net_after_cost_bps</th>
-      </tr>
-    </thead>
-    <tbody>{recent_alert_rows or "<tr><td colspan='7'>No alert events sent yet.</td></tr>"}</tbody>
+    <tbody>{rows or "<tr><td colspan='12'>No opportunities.</td></tr>"}</tbody>
   </table>
 </body>
 </html>
@@ -414,6 +384,23 @@ def _safe_raw_opportunity_json(raw_value: object) -> dict[str, object]:
     return {}
 
 
+def _value_from_record_then_raw(
+    record: ObservationRecord,
+    raw: dict[str, object],
+    *,
+    record_field: str,
+    raw_keys: list[str],
+) -> object | None:
+    record_value = getattr(record, record_field, None)
+    if record_value is not None:
+        return record_value
+    for key in raw_keys:
+        value = raw.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 @app.get("/api/v1/opportunities")
 async def get_opportunities(
     symbols: str | None = Query(
@@ -451,12 +438,50 @@ async def get_opportunities(
         short_exchange = str(raw.get("short_exchange", record.short_exchange))
         symbol = str(raw.get("symbol", record.symbol)).upper()
         route_key = str(raw.get("route_key") or f"{symbol}:{long_exchange.lower()}->{short_exchange.lower()}")
-        risk_adjusted_edge_bps = _coerce_float(raw.get("risk_adjusted_edge_bps"), default=0.0)
-        replay_net_after_cost_bps = _coerce_float(record.replay_net_after_cost_bps, default=0.0)
-        estimated_net_edge_bps = _coerce_float(raw.get("net_edge_bps"), default=_coerce_float(record.estimated_net_edge_bps, default=0.0))
-        price_spread_bps = _coerce_float(raw.get("price_spread_bps"), default=0.0)
-        funding_spread_bps = _coerce_float(raw.get("funding_spread_bps"), default=0.0)
-        opportunity_type = str(raw.get("opportunity_type") or raw.get("opportunity_grade") or record.opportunity_grade or "unknown")
+        risk_adjusted_edge_bps = _coerce_float(
+            _value_from_record_then_raw(
+                record,
+                raw,
+                record_field="risk_adjusted_edge_bps",
+                raw_keys=["risk_adjusted_edge_bps"],
+            ),
+            default=0.0,
+        )
+        replay_net_after_cost_bps = _coerce_float(
+            _value_from_record_then_raw(
+                record,
+                raw,
+                record_field="replay_net_after_cost_bps",
+                raw_keys=["replay_net_after_cost_bps"],
+            ),
+            default=0.0,
+        )
+        estimated_net_edge_bps = _coerce_float(
+            _value_from_record_then_raw(
+                record,
+                raw,
+                record_field="estimated_net_edge_bps",
+                raw_keys=["estimated_net_edge_bps", "net_edge_bps"],
+            ),
+            default=0.0,
+        )
+        price_spread_bps = _coerce_float(
+            _value_from_record_then_raw(record, raw, record_field="price_spread_bps", raw_keys=["price_spread_bps"]),
+            default=0.0,
+        )
+        funding_spread_bps = _coerce_float(
+            _value_from_record_then_raw(record, raw, record_field="funding_spread_bps", raw_keys=["funding_spread_bps"]),
+            default=0.0,
+        )
+        opportunity_type = str(
+            _value_from_record_then_raw(
+                record,
+                raw,
+                record_field="opportunity_grade",
+                raw_keys=["opportunity_type", "opportunity_grade"],
+            )
+            or "unknown"
+        )
         if estimated_net_edge_bps < min_edge_bps or risk_adjusted_edge_bps < min_score:
             continue
 
@@ -1059,6 +1084,25 @@ def _render_dashboard_row(item: DashboardRow) -> str:
         f"<td>{replay_passes_gate_display}</td>"
         f"<td>{item.opportunity.cluster_id or '-'}</td>"
         f"<td>{escape(item.history_hint)}</td>"
+        "</tr>"
+    )
+
+
+def _render_dashboard_opportunity_row(item: dict[str, object]) -> str:
+    return (
+        "<tr>"
+        f"<td>{int(item.get('rank', 0))}</td>"
+        f"<td>{escape(str(item.get('symbol', '-')))}</td>"
+        f"<td>{escape(str(item.get('long_exchange', '-')))}</td>"
+        f"<td>{escape(str(item.get('short_exchange', '-')))}</td>"
+        f"<td>{_coerce_float(item.get('price_spread_bps'), default=0.0):.2f}</td>"
+        f"<td>{_coerce_float(item.get('funding_spread_bps'), default=0.0):.2f}</td>"
+        f"<td>{_coerce_float(item.get('risk_adjusted_edge_bps'), default=0.0):.2f}</td>"
+        f"<td>{_coerce_float(item.get('replay_net_after_cost_bps'), default=0.0):.2f}</td>"
+        f"<td>{_coerce_float(item.get('estimated_net_edge_bps'), default=0.0):.2f}</td>"
+        f"<td>{escape(str(item.get('opportunity_type', 'unknown')))}</td>"
+        f"<td>{escape(str(item.get('route_key', '-')))}</td>"
+        f"<td>{'yes' if _coerce_bool(item.get('is_test'), default=False) else 'no'}</td>"
         "</tr>"
     )
 

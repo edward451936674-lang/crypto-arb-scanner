@@ -524,3 +524,98 @@ def test_opportunities_endpoint_handles_invalid_raw_json_payloads_safely(tmp_pat
     assert payload[0]["funding_spread_bps"] == 0.0
     assert payload[0]["risk_adjusted_edge_bps"] == 0.0
     assert payload[0]["opportunity_type"] == "fallback-grade"
+
+
+def test_opportunities_endpoint_prefers_dedicated_values_then_raw_then_defaults(tmp_path, monkeypatch) -> None:
+    real_observation = ObservationRecord.model_construct(
+        **{
+            "observed_at_ms": 1_700_000_000_010,
+            "symbol": "BTC",
+            "cluster_id": "BTC|binance|okx",
+            "long_exchange": "binance",
+            "short_exchange": "okx",
+            "price_spread_bps": 11.0,
+            "funding_spread_bps": 4.0,
+            "risk_adjusted_edge_bps": 17.0,
+            "estimated_net_edge_bps": 13.0,
+            "replay_net_after_cost_bps": 9.0,
+            "opportunity_grade": "dedicated-grade",
+            "raw_opportunity_json": {
+                "price_spread_bps": 99.0,
+                "funding_spread_bps": 88.0,
+                "risk_adjusted_edge_bps": 77.0,
+                "net_edge_bps": 66.0,
+                "replay_net_after_cost_bps": 55.0,
+                "opportunity_type": "raw-grade",
+                "test": False,
+            },
+        }
+    )
+    fallback_to_raw = ObservationRecord.model_construct(
+        **{
+            "observed_at_ms": 1_700_000_000_011,
+            "symbol": "ETH",
+            "cluster_id": "ETH|binance|okx",
+            "long_exchange": "binance",
+            "short_exchange": "okx",
+            "estimated_net_edge_bps": None,
+            "replay_net_after_cost_bps": None,
+            "opportunity_grade": None,
+            "raw_opportunity_json": {
+                "price_spread_bps": 7.0,
+                "funding_spread_bps": 3.0,
+                "risk_adjusted_edge_bps": 12.0,
+                "net_edge_bps": 10.0,
+                "replay_net_after_cost_bps": 8.0,
+                "opportunity_type": "raw-watchlist",
+                "test": "true",
+            },
+        }
+    )
+    defaults_only = ObservationRecord.model_construct(
+        **{
+            "observed_at_ms": 1_700_000_000_012,
+            "symbol": "SOL",
+            "cluster_id": "SOL|binance|okx",
+            "long_exchange": "binance",
+            "short_exchange": "okx",
+            "estimated_net_edge_bps": None,
+            "replay_net_after_cost_bps": None,
+            "opportunity_grade": None,
+            "raw_opportunity_json": {},
+        }
+    )
+    monkeypatch.setattr("app.main.observation_store.latest", lambda limit=5000: [real_observation, fallback_to_raw, defaults_only])
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities", params={"dedupe_by_route": False, "top_n": 10})
+
+    assert response.status_code == 200
+    payload = {item["symbol"]: item for item in response.json()}
+
+    btc = payload["BTC"]
+    assert btc["price_spread_bps"] == 11.0
+    assert btc["funding_spread_bps"] == 4.0
+    assert btc["risk_adjusted_edge_bps"] == 17.0
+    assert btc["replay_net_after_cost_bps"] == 9.0
+    assert btc["estimated_net_edge_bps"] == 13.0
+    assert btc["opportunity_type"] == "dedicated-grade"
+    assert btc["is_test"] is False
+
+    eth = payload["ETH"]
+    assert eth["price_spread_bps"] == 7.0
+    assert eth["funding_spread_bps"] == 3.0
+    assert eth["risk_adjusted_edge_bps"] == 12.0
+    assert eth["replay_net_after_cost_bps"] == 8.0
+    assert eth["estimated_net_edge_bps"] == 10.0
+    assert eth["opportunity_type"] == "raw-watchlist"
+    assert eth["is_test"] is True
+
+    sol = payload["SOL"]
+    assert sol["price_spread_bps"] == 0.0
+    assert sol["funding_spread_bps"] == 0.0
+    assert sol["risk_adjusted_edge_bps"] == 0.0
+    assert sol["replay_net_after_cost_bps"] == 0.0
+    assert sol["estimated_net_edge_bps"] == 0.0
+    assert sol["opportunity_type"] == "unknown"
+    assert sol["is_test"] is False
