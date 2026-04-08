@@ -388,18 +388,6 @@ async def get_opportunities(
     min_edge_bps: float = Query(default=0.0),
     min_score: float = Query(default=0.0),
 ) -> list[dict[str, object]]:
-    top_n_value = int(top_n) if isinstance(top_n, int) else int(getattr(top_n, "default", 10))
-    only_actionable_value = (
-        bool(only_actionable) if isinstance(only_actionable, bool) else bool(getattr(only_actionable, "default", False))
-    )
-    dedupe_by_route_value = (
-        bool(dedupe_by_route) if isinstance(dedupe_by_route, bool) else bool(getattr(dedupe_by_route, "default", True))
-    )
-    min_edge_bps_value = (
-        float(min_edge_bps) if isinstance(min_edge_bps, (float, int)) else float(getattr(min_edge_bps, "default", 0.0))
-    )
-    min_score_value = float(min_score) if isinstance(min_score, (float, int)) else float(getattr(min_score, "default", 0.0))
-
     requested_symbols = parse_symbols(symbols) if symbols else None
     requested_symbol_set = {symbol.upper() for symbol in requested_symbols} if requested_symbols else None
 
@@ -414,7 +402,7 @@ async def get_opportunities(
         execution_mode = str(raw.get("execution_mode", record.execution_mode or ""))
         funding_confidence_label = str(raw.get("funding_confidence_label", "")).lower()
         conviction_label = str(raw.get("conviction_label", "")).lower()
-        if only_actionable_value and (
+        if only_actionable and (
             execution_mode in {"paper", "small_probe"}
             or funding_confidence_label == "low"
             or conviction_label == "low"
@@ -426,8 +414,9 @@ async def get_opportunities(
         symbol = str(raw.get("symbol", record.symbol)).upper()
         route_key = str(raw.get("route_key") or f"{symbol}:{long_exchange.lower()}->{short_exchange.lower()}")
         risk_adjusted_edge_bps = float(raw.get("risk_adjusted_edge_bps") or 0.0)
+        replay_net_after_cost_bps = float(record.replay_net_after_cost_bps) if record.replay_net_after_cost_bps is not None else 0.0
         estimated_net_edge_bps = float(raw.get("net_edge_bps") or record.estimated_net_edge_bps or 0.0)
-        if estimated_net_edge_bps < min_edge_bps_value or risk_adjusted_edge_bps < min_score_value:
+        if estimated_net_edge_bps < min_edge_bps or risk_adjusted_edge_bps < min_score:
             continue
 
         opportunities.append(
@@ -438,26 +427,25 @@ async def get_opportunities(
                 "price_spread_bps": float(raw.get("price_spread_bps") or 0.0),
                 "funding_spread_bps": float(raw.get("funding_spread_bps") or 0.0),
                 "risk_adjusted_edge_bps": risk_adjusted_edge_bps,
-                "replay_net_after_cost_bps": (
-                    float(record.replay_net_after_cost_bps) if record.replay_net_after_cost_bps is not None else 0.0
-                ),
+                "replay_net_after_cost_bps": replay_net_after_cost_bps,
                 "estimated_net_edge_bps": estimated_net_edge_bps,
                 "route_key": route_key,
                 "opportunity_type": str(raw.get("opportunity_type") or raw.get("opportunity_grade") or "unknown"),
             }
         )
 
-    def _sort_tuple(item: dict[str, object]) -> tuple[float, float, float, str, str, str]:
+    def _sort_tuple(item: dict[str, object]) -> tuple[float, float, float, str, str, str, str]:
         return (
             float(item["risk_adjusted_edge_bps"]),
             float(item["replay_net_after_cost_bps"]),
             float(item["estimated_net_edge_bps"]),
+            str(item["route_key"]),
             str(item["symbol"]),
             str(item["long_exchange"]),
             str(item["short_exchange"]),
         )
 
-    if dedupe_by_route_value:
+    if dedupe_by_route:
         best_by_route: dict[str, dict[str, object]] = {}
         for item in opportunities:
             item_route_key = str(item["route_key"])
@@ -467,7 +455,7 @@ async def get_opportunities(
         opportunities = list(best_by_route.values())
 
     opportunities.sort(key=_sort_tuple, reverse=True)
-    selected = opportunities[:top_n_value]
+    selected = opportunities[:top_n]
     for index, item in enumerate(selected, start=1):
         item["rank"] = index
     return selected
