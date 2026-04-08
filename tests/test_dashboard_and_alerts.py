@@ -72,7 +72,7 @@ def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(main_module, "observation_store", ObservationStore(str(tmp_path / "dashboard.sqlite3")))
 
     client = TestClient(app)
-    response = client.get("/dashboard", params={"top_n": 5, "only_actionable": True})
+    response = client.get("/", params={"top_n": 5, "only_actionable": True})
 
     assert response.status_code == 200
     body = response.text
@@ -95,10 +95,21 @@ def test_dashboard_shows_empty_state_when_no_opportunities(monkeypatch) -> None:
 
     monkeypatch.setattr(main_module, "get_opportunities", fake_opportunities)
     client = TestClient(app)
-    response = client.get("/dashboard")
+    response = client.get("/")
     assert response.status_code == 200
     body = response.text
     assert "No opportunities." in body
+
+
+def test_legacy_dashboard_route_still_serves_html(monkeypatch) -> None:
+    async def fake_opportunities(**_: object) -> list[dict[str, object]]:
+        return []
+
+    monkeypatch.setattr(main_module, "get_opportunities", fake_opportunities)
+    client = TestClient(app)
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+    assert "Live Opportunities Dashboard" in response.text
 
 
 def test_why_not_tradable_label_scenarios() -> None:
