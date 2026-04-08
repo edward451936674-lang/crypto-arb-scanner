@@ -19,6 +19,7 @@ def _record(
     route_key: str | None = None,
     opportunity_type: str = "tradable",
     observed_at_ms: int = 1_700_000_000_000,
+    is_test: bool = True,
 ) -> ObservationRecord:
     route = route_key or f"{symbol}:{long_exchange}->{short_exchange}"
     return ObservationRecord(
@@ -45,6 +46,7 @@ def _record(
             "funding_confidence_label": funding_confidence_label,
             "conviction_label": conviction_label,
             "opportunity_type": opportunity_type,
+            "is_test": is_test,
         },
     )
 
@@ -233,3 +235,81 @@ def test_opportunities_endpoint_dedupe_prefers_highest_risk_adjusted_edge(tmp_pa
     payload = response.json()
     assert len(payload) == 1
     assert payload[0]["risk_adjusted_edge_bps"] == 18
+
+
+def test_opportunities_endpoint_combines_filters_sorting_top_n_and_is_deterministic(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(  # excluded by only_actionable due to paper mode
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=60,
+                replay_net_after_cost_bps=30,
+                estimated_net_edge_bps=25,
+                execution_mode="paper",
+            ),
+            _record(  # duplicate route, lower risk_adjusted_edge_bps should be removed by dedupe
+                symbol="ETH",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=40,
+                replay_net_after_cost_bps=22,
+                estimated_net_edge_bps=21,
+                route_key="ETH:binance->okx",
+            ),
+            _record(
+                symbol="ETH",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=45,
+                replay_net_after_cost_bps=18,
+                estimated_net_edge_bps=17,
+                route_key="ETH:binance->okx",
+            ),
+            _record(
+                symbol="SOL",
+                long_exchange="okx",
+                short_exchange="binance",
+                risk_adjusted_edge_bps=45,
+                replay_net_after_cost_bps=20,
+                estimated_net_edge_bps=18,
+                route_key="SOL:okx->binance",
+            ),
+            _record(  # excluded by only_actionable due to low funding confidence
+                symbol="XRP",
+                long_exchange="okx",
+                short_exchange="binance",
+                risk_adjusted_edge_bps=50,
+                replay_net_after_cost_bps=19,
+                estimated_net_edge_bps=16,
+                funding_confidence_label="low",
+            ),
+            _record(
+                symbol="ADA",
+                long_exchange="bybit",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=35,
+                replay_net_after_cost_bps=15,
+                estimated_net_edge_bps=14,
+                route_key="ADA:bybit->okx",
+            ),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    params = {"only_actionable": True, "dedupe_by_route": True, "top_n": 2}
+    first_response = client.get("/api/v1/opportunities", params=params)
+    second_response = client.get("/api/v1/opportunities", params=params)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+
+    first_payload = first_response.json()
+    second_payload = second_response.json()
+    assert first_payload == second_payload
+    assert len(first_payload) == 2
+    assert [item["symbol"] for item in first_payload] == ["SOL", "ETH"]
+    assert [item["rank"] for item in first_payload] == [1, 2]
