@@ -179,3 +179,57 @@ def test_opportunities_endpoint_sorts_and_dedupes_by_route(tmp_path, monkeypatch
     assert len(payload) == 3
     assert [item["symbol"] for item in payload] == ["SOL", "ETH", "BTC"]
     assert payload[2]["risk_adjusted_edge_bps"] == 12
+
+
+def test_opportunities_endpoint_sorting_uses_replay_then_estimated_tiebreakers(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=20, replay_net_after_cost_bps=8, estimated_net_edge_bps=11),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=20, replay_net_after_cost_bps=9, estimated_net_edge_bps=10),
+            _record(symbol="SOL", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=20, replay_net_after_cost_bps=9, estimated_net_edge_bps=12),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["symbol"] for item in payload] == ["SOL", "ETH", "BTC"]
+
+
+def test_opportunities_endpoint_dedupe_prefers_highest_risk_adjusted_edge(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=15,
+                replay_net_after_cost_bps=50,
+                estimated_net_edge_bps=50,
+                route_key="BTC:binance->okx",
+            ),
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=18,
+                replay_net_after_cost_bps=1,
+                estimated_net_edge_bps=1,
+                route_key="BTC:binance->okx",
+            ),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities", params={"dedupe_by_route": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["risk_adjusted_edge_bps"] == 18
