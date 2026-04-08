@@ -399,7 +399,7 @@ async def get_opportunities(
             continue
 
         raw = record.raw_opportunity_json
-        execution_mode = str(raw.get("execution_mode", record.execution_mode or ""))
+        execution_mode = str(raw.get("execution_mode", record.execution_mode or "")).lower()
         funding_confidence_label = str(raw.get("funding_confidence_label", "")).lower()
         conviction_label = str(raw.get("conviction_label", "")).lower()
         if only_actionable and (
@@ -431,6 +431,7 @@ async def get_opportunities(
                 "estimated_net_edge_bps": estimated_net_edge_bps,
                 "route_key": route_key,
                 "opportunity_type": str(raw.get("opportunity_type") or raw.get("opportunity_grade") or "unknown"),
+                "is_test": bool(raw.get("is_test", False)),
             }
         )
 
