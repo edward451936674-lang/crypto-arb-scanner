@@ -50,7 +50,7 @@ def _opportunity(
 
 
 def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
-    async def fake_opportunities(**_: object) -> list[dict[str, object]]:
+    def fake_opportunities(**_: object) -> list[dict[str, object]]:
         return [
             {
                 "rank": 1,
@@ -68,7 +68,7 @@ def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
             },
         ]
 
-    monkeypatch.setattr(main_module, "get_opportunities", fake_opportunities)
+    monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
     monkeypatch.setattr(main_module, "observation_store", ObservationStore(str(tmp_path / "dashboard.sqlite3")))
 
     client = TestClient(app)
@@ -90,10 +90,10 @@ def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
 
 
 def test_dashboard_shows_empty_state_when_no_opportunities(monkeypatch) -> None:
-    async def fake_opportunities(**_: object) -> list[dict[str, object]]:
+    def fake_opportunities(**_: object) -> list[dict[str, object]]:
         return []
 
-    monkeypatch.setattr(main_module, "get_opportunities", fake_opportunities)
+    monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
     client = TestClient(app)
     response = client.get("/")
     assert response.status_code == 200
@@ -102,10 +102,10 @@ def test_dashboard_shows_empty_state_when_no_opportunities(monkeypatch) -> None:
 
 
 def test_legacy_dashboard_route_still_serves_html(monkeypatch) -> None:
-    async def fake_opportunities(**_: object) -> list[dict[str, object]]:
+    def fake_opportunities(**_: object) -> list[dict[str, object]]:
         return []
 
-    monkeypatch.setattr(main_module, "get_opportunities", fake_opportunities)
+    monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
     client = TestClient(app)
     response = client.get("/dashboard")
     assert response.status_code == 200
