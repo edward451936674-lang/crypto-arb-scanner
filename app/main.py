@@ -1,6 +1,7 @@
 from html import escape
 from dataclasses import dataclass
 import hashlib
+import json
 import time
 from datetime import datetime, timezone
 from typing import Literal
@@ -392,6 +393,27 @@ def _coerce_bool(value: object, *, default: bool = False) -> bool:
     return bool(value)
 
 
+def _coerce_float(value: object, *, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_raw_opportunity_json(raw_value: object) -> dict[str, object]:
+    if isinstance(raw_value, dict):
+        return raw_value
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 @app.get("/api/v1/opportunities")
 async def get_opportunities(
     symbols: str | None = Query(
@@ -414,7 +436,7 @@ async def get_opportunities(
         if requested_symbol_set is not None and symbol_key not in requested_symbol_set:
             continue
 
-        raw = record.raw_opportunity_json
+        raw = _safe_raw_opportunity_json(record.raw_opportunity_json)
         execution_mode = str(raw.get("execution_mode", record.execution_mode or "")).lower()
         funding_confidence_label = str(raw.get("funding_confidence_label", "")).lower()
         conviction_label = str(raw.get("conviction_label", "")).lower()
@@ -429,9 +451,12 @@ async def get_opportunities(
         short_exchange = str(raw.get("short_exchange", record.short_exchange))
         symbol = str(raw.get("symbol", record.symbol)).upper()
         route_key = str(raw.get("route_key") or f"{symbol}:{long_exchange.lower()}->{short_exchange.lower()}")
-        risk_adjusted_edge_bps = float(raw.get("risk_adjusted_edge_bps") or 0.0)
-        replay_net_after_cost_bps = float(record.replay_net_after_cost_bps) if record.replay_net_after_cost_bps is not None else 0.0
-        estimated_net_edge_bps = float(raw.get("net_edge_bps") or record.estimated_net_edge_bps or 0.0)
+        risk_adjusted_edge_bps = _coerce_float(raw.get("risk_adjusted_edge_bps"), default=0.0)
+        replay_net_after_cost_bps = _coerce_float(record.replay_net_after_cost_bps, default=0.0)
+        estimated_net_edge_bps = _coerce_float(raw.get("net_edge_bps"), default=_coerce_float(record.estimated_net_edge_bps, default=0.0))
+        price_spread_bps = _coerce_float(raw.get("price_spread_bps"), default=0.0)
+        funding_spread_bps = _coerce_float(raw.get("funding_spread_bps"), default=0.0)
+        opportunity_type = str(raw.get("opportunity_type") or raw.get("opportunity_grade") or record.opportunity_grade or "unknown")
         if estimated_net_edge_bps < min_edge_bps or risk_adjusted_edge_bps < min_score:
             continue
 
@@ -440,13 +465,13 @@ async def get_opportunities(
                 "symbol": symbol,
                 "long_exchange": long_exchange,
                 "short_exchange": short_exchange,
-                "price_spread_bps": float(raw.get("price_spread_bps") or 0.0),
-                "funding_spread_bps": float(raw.get("funding_spread_bps") or 0.0),
+                "price_spread_bps": price_spread_bps,
+                "funding_spread_bps": funding_spread_bps,
                 "risk_adjusted_edge_bps": risk_adjusted_edge_bps,
                 "replay_net_after_cost_bps": replay_net_after_cost_bps,
                 "estimated_net_edge_bps": estimated_net_edge_bps,
                 "route_key": route_key,
-                "opportunity_type": str(raw.get("opportunity_type") or raw.get("opportunity_grade") or "unknown"),
+                "opportunity_type": opportunity_type,
                 "is_test": _coerce_bool(raw.get("test"), default=False),
             }
         )
