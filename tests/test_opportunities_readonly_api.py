@@ -387,3 +387,38 @@ def test_opportunities_endpoint_dashboard_scenario_with_test_snapshots(tmp_path,
     print(payload[0])
     captured = capsys.readouterr()
     assert "BTC" in captured.out
+
+
+def test_opportunities_endpoint_parses_is_test_string_flags(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    btc = _record(
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        risk_adjusted_edge_bps=15,
+        replay_net_after_cost_bps=14,
+        estimated_net_edge_bps=13,
+        is_test=True,
+    )
+    eth = _record(
+        symbol="ETH",
+        long_exchange="okx",
+        short_exchange="binance",
+        risk_adjusted_edge_bps=12,
+        replay_net_after_cost_bps=11,
+        estimated_net_edge_bps=10,
+        is_test=True,
+    )
+    btc.raw_opportunity_json["is_test"] = "false"
+    eth.raw_opportunity_json["is_test"] = "true"
+    store.insert_many([btc, eth])
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities", params={"dedupe_by_route": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    by_symbol = {item["symbol"]: item["is_test"] for item in payload}
+    assert by_symbol["BTC"] is False
+    assert by_symbol["ETH"] is True

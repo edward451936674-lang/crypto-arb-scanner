@@ -376,6 +376,22 @@ async def get_snapshots(
     return result.model_dump()
 
 
+def _coerce_bool(value: object, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
 @app.get("/api/v1/opportunities")
 async def get_opportunities(
     symbols: str | None = Query(
@@ -431,7 +447,7 @@ async def get_opportunities(
                 "estimated_net_edge_bps": estimated_net_edge_bps,
                 "route_key": route_key,
                 "opportunity_type": str(raw.get("opportunity_type") or raw.get("opportunity_grade") or "unknown"),
-                "is_test": bool(raw.get("is_test", False)),
+                "is_test": _coerce_bool(raw.get("is_test"), default=False),
             }
         )
 
