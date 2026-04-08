@@ -1,7 +1,6 @@
 from html import escape
 from dataclasses import dataclass
 import hashlib
-from itertools import combinations
 import time
 from datetime import datetime, timezone
 from typing import Literal
@@ -386,90 +385,92 @@ async def get_opportunities(
     top_n: int = Query(default=10, ge=1, le=500),
     only_actionable: bool = Query(default=False),
     dedupe_by_route: bool = Query(default=True),
+    min_edge_bps: float = Query(default=0.0),
+    min_score: float = Query(default=0.0),
 ) -> list[dict[str, object]]:
-    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
-    try:
-        scan_context = await _build_scan_context(requested_symbols)
-    except (ValueError, ValidationError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    top_n_value = int(top_n) if isinstance(top_n, int) else int(getattr(top_n, "default", 10))
+    only_actionable_value = (
+        bool(only_actionable) if isinstance(only_actionable, bool) else bool(getattr(only_actionable, "default", False))
+    )
+    dedupe_by_route_value = (
+        bool(dedupe_by_route) if isinstance(dedupe_by_route, bool) else bool(getattr(dedupe_by_route, "default", True))
+    )
+    min_edge_bps_value = (
+        float(min_edge_bps) if isinstance(min_edge_bps, (float, int)) else float(getattr(min_edge_bps, "default", 0.0))
+    )
+    min_score_value = float(min_score) if isinstance(min_score, (float, int)) else float(getattr(min_score, "default", 0.0))
 
-    actionable_routes: set[tuple[str, str, str]] = set()
-    if only_actionable:
-        actionable_routes = {
-            (
-                opportunity.symbol.upper(),
-                opportunity.long_exchange.lower(),
-                opportunity.short_exchange.lower(),
-            )
-            for opportunity in scan_context.opportunities
-            if opportunity.execution_mode not in {"paper", "small_probe"}
-        }
+    requested_symbols = parse_symbols(symbols) if symbols else None
+    requested_symbol_set = {symbol.upper() for symbol in requested_symbols} if requested_symbols else None
 
-    snapshots_by_symbol: dict[str, list[MarketSnapshot]] = {}
-    for snapshot in scan_context.accepted_snapshots:
-        if snapshot.mark_price is None or snapshot.funding_rate is None:
-            continue
-        symbol_key = snapshot.base_symbol.upper()
-        snapshots_by_symbol.setdefault(symbol_key, []).append(snapshot)
-
+    records = observation_store.latest(limit=5000)
     opportunities: list[dict[str, object]] = []
-    for symbol_key in sorted(snapshots_by_symbol):
-        symbol_snapshots = snapshots_by_symbol[symbol_key]
-        for first, second in combinations(symbol_snapshots, 2):
-            if first.mark_price <= second.mark_price:
-                long_snapshot = first
-                short_snapshot = second
-            else:
-                long_snapshot = second
-                short_snapshot = first
+    for record in records:
+        symbol_key = record.symbol.upper()
+        if requested_symbol_set is not None and symbol_key not in requested_symbol_set:
+            continue
 
-            route_key = (
-                symbol_key,
-                long_snapshot.exchange.lower(),
-                short_snapshot.exchange.lower(),
-            )
-            if only_actionable and route_key not in actionable_routes:
-                continue
+        raw = record.raw_opportunity_json
+        execution_mode = str(raw.get("execution_mode", record.execution_mode or ""))
+        funding_confidence_label = str(raw.get("funding_confidence_label", "")).lower()
+        conviction_label = str(raw.get("conviction_label", "")).lower()
+        if only_actionable_value and (
+            execution_mode in {"paper", "small_probe"}
+            or funding_confidence_label == "low"
+            or conviction_label == "low"
+        ):
+            continue
 
-            min_mark_price = long_snapshot.mark_price
-            max_mark_price = short_snapshot.mark_price
-            price_spread_bps = ((max_mark_price - min_mark_price) / min_mark_price) * 10_000
-            funding_spread_bps = (short_snapshot.funding_rate - long_snapshot.funding_rate) * 10_000
-            estimated_net_edge_bps = price_spread_bps + funding_spread_bps
+        long_exchange = str(raw.get("long_exchange", record.long_exchange))
+        short_exchange = str(raw.get("short_exchange", record.short_exchange))
+        symbol = str(raw.get("symbol", record.symbol)).upper()
+        route_key = str(raw.get("route_key") or f"{symbol}:{long_exchange.lower()}->{short_exchange.lower()}")
+        risk_adjusted_edge_bps = float(raw.get("risk_adjusted_edge_bps") or 0.0)
+        estimated_net_edge_bps = float(raw.get("net_edge_bps") or record.estimated_net_edge_bps or 0.0)
+        if estimated_net_edge_bps < min_edge_bps_value or risk_adjusted_edge_bps < min_score_value:
+            continue
 
-            opportunities.append(
-                {
-                    "symbol": symbol_key,
-                    "long_exchange": long_snapshot.exchange,
-                    "short_exchange": short_snapshot.exchange,
-                    "price_spread_bps": price_spread_bps,
-                    "funding_spread_bps": funding_spread_bps,
-                    "estimated_net_edge_bps": estimated_net_edge_bps,
-                }
-            )
+        opportunities.append(
+            {
+                "symbol": symbol,
+                "long_exchange": long_exchange,
+                "short_exchange": short_exchange,
+                "price_spread_bps": float(raw.get("price_spread_bps") or 0.0),
+                "funding_spread_bps": float(raw.get("funding_spread_bps") or 0.0),
+                "risk_adjusted_edge_bps": risk_adjusted_edge_bps,
+                "replay_net_after_cost_bps": (
+                    float(record.replay_net_after_cost_bps) if record.replay_net_after_cost_bps is not None else 0.0
+                ),
+                "estimated_net_edge_bps": estimated_net_edge_bps,
+                "route_key": route_key,
+                "opportunity_type": str(raw.get("opportunity_type") or raw.get("opportunity_grade") or "unknown"),
+            }
+        )
 
-    if dedupe_by_route:
-        best_by_route: dict[tuple[str, str, str], dict[str, object]] = {}
-        for item in opportunities:
-            route_key = (
-                str(item["symbol"]).upper(),
-                str(item["long_exchange"]).lower(),
-                str(item["short_exchange"]).lower(),
-            )
-            existing = best_by_route.get(route_key)
-            if existing is None or float(item["estimated_net_edge_bps"]) > float(existing["estimated_net_edge_bps"]):
-                best_by_route[route_key] = item
-        opportunities = list(best_by_route.values())
-
-    opportunities.sort(
-        key=lambda item: (
-            -float(item["estimated_net_edge_bps"]),
+    def _sort_tuple(item: dict[str, object]) -> tuple[float, float, float, str, str, str]:
+        return (
+            float(item["risk_adjusted_edge_bps"]),
+            float(item["replay_net_after_cost_bps"]),
+            float(item["estimated_net_edge_bps"]),
             str(item["symbol"]),
             str(item["long_exchange"]),
             str(item["short_exchange"]),
         )
-    )
-    return opportunities[:top_n]
+
+    if dedupe_by_route_value:
+        best_by_route: dict[str, dict[str, object]] = {}
+        for item in opportunities:
+            item_route_key = str(item["route_key"])
+            existing = best_by_route.get(item_route_key)
+            if existing is None or _sort_tuple(item) > _sort_tuple(existing):
+                best_by_route[item_route_key] = item
+        opportunities = list(best_by_route.values())
+
+    opportunities.sort(key=_sort_tuple, reverse=True)
+    selected = opportunities[:top_n_value]
+    for index, item in enumerate(selected, start=1):
+        item["rank"] = index
+    return selected
 
 
 @app.post("/api/v1/observe/run")
