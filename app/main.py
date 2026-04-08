@@ -450,7 +450,16 @@ async def get_opportunities(
         for item in opportunities:
             item_route_key = str(item["route_key"])
             existing = best_by_route.get(item_route_key)
-            if existing is None or _sort_tuple(item) > _sort_tuple(existing):
+            if existing is None:
+                best_by_route[item_route_key] = item
+                continue
+
+            candidate_risk_adjusted_edge_bps = float(item["risk_adjusted_edge_bps"])
+            existing_risk_adjusted_edge_bps = float(existing["risk_adjusted_edge_bps"])
+            if candidate_risk_adjusted_edge_bps > existing_risk_adjusted_edge_bps:
+                best_by_route[item_route_key] = item
+                continue
+            if candidate_risk_adjusted_edge_bps == existing_risk_adjusted_edge_bps and _sort_tuple(item) > _sort_tuple(existing):
                 best_by_route[item_route_key] = item
         opportunities = list(best_by_route.values())
 
