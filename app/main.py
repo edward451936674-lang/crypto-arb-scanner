@@ -447,7 +447,7 @@ async def get_opportunities(
                 "estimated_net_edge_bps": estimated_net_edge_bps,
                 "route_key": route_key,
                 "opportunity_type": str(raw.get("opportunity_type") or raw.get("opportunity_grade") or "unknown"),
-                "is_test": _coerce_bool(raw.get("is_test"), default=False),
+                "is_test": _coerce_bool(raw.get("test"), default=False),
             }
         )
 
