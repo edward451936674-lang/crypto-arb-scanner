@@ -422,3 +422,105 @@ def test_opportunities_endpoint_parses_test_string_flags(tmp_path, monkeypatch) 
     by_symbol = {item["symbol"]: item["is_test"] for item in payload}
     assert by_symbol["BTC"] is False
     assert by_symbol["ETH"] is True
+
+
+def test_opportunities_endpoint_falls_back_to_raw_payload_for_test_snapshots_and_primary_sort(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    btc = ObservationRecord(
+        observed_at_ms=1_700_000_000_000,
+        symbol="BTC",
+        cluster_id="BTC|binance|okx",
+        long_exchange="binance",
+        short_exchange="okx",
+        estimated_net_edge_bps=15.0,
+        opportunity_grade=None,
+        execution_mode="normal",
+        final_position_pct=0.01,
+        replay_net_after_cost_bps=10.0,
+        raw_opportunity_json={
+            "symbol": "BTC",
+            "long_exchange": "binance",
+            "short_exchange": "okx",
+            "route_key": "BTC:binance->okx",
+            "test": True,
+            "price_spread_bps": 7.0,
+            "funding_spread_bps": 3.0,
+            "risk_adjusted_edge_bps": 5.0,
+            "net_edge_bps": 15.0,
+            "opportunity_type": "watchlist",
+        },
+    )
+    eth = ObservationRecord(
+        observed_at_ms=1_700_000_000_001,
+        symbol="ETH",
+        cluster_id="ETH|binance|okx",
+        long_exchange="binance",
+        short_exchange="okx",
+        estimated_net_edge_bps=12.0,
+        opportunity_grade=None,
+        execution_mode="normal",
+        final_position_pct=0.01,
+        replay_net_after_cost_bps=8.0,
+        raw_opportunity_json={
+            "symbol": "ETH",
+            "long_exchange": "binance",
+            "short_exchange": "okx",
+            "route_key": "ETH:binance->okx",
+            "test": True,
+            "price_spread_bps": 8.0,
+            "funding_spread_bps": 4.0,
+            "risk_adjusted_edge_bps": 12.0,
+            "net_edge_bps": 12.0,
+            "opportunity_type": "tradable",
+        },
+    )
+    store.insert_many([btc, eth])
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities", params={"dedupe_by_route": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["symbol"] for item in payload] == ["ETH", "BTC"]
+    assert all(item["is_test"] is True for item in payload)
+    assert payload[0]["risk_adjusted_edge_bps"] == 12.0
+    assert payload[1]["risk_adjusted_edge_bps"] == 5.0
+    assert payload[0]["replay_net_after_cost_bps"] == 8.0
+    assert payload[1]["replay_net_after_cost_bps"] == 10.0
+    assert payload[0]["price_spread_bps"] == 8.0
+    assert payload[1]["price_spread_bps"] == 7.0
+    assert payload[0]["funding_spread_bps"] == 4.0
+    assert payload[1]["funding_spread_bps"] == 3.0
+    assert payload[0]["opportunity_type"] == "tradable"
+    assert payload[1]["opportunity_type"] == "watchlist"
+
+
+def test_opportunities_endpoint_handles_invalid_raw_json_payloads_safely(tmp_path, monkeypatch) -> None:
+    invalid_raw_record = ObservationRecord.model_construct(
+        observed_at_ms=1_700_000_000_000,
+        symbol="BTC",
+        cluster_id="BTC|binance|okx",
+        long_exchange="binance",
+        short_exchange="okx",
+        estimated_net_edge_bps=9.0,
+        opportunity_grade="fallback-grade",
+        execution_mode="normal",
+        final_position_pct=0.01,
+        replay_net_after_cost_bps=8.0,
+        raw_opportunity_json="{not-valid-json",
+    )
+    monkeypatch.setattr("app.main.observation_store.latest", lambda limit=5000: [invalid_raw_record])
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["symbol"] == "BTC"
+    assert payload[0]["is_test"] is False
+    assert payload[0]["price_spread_bps"] == 0.0
+    assert payload[0]["funding_spread_bps"] == 0.0
+    assert payload[0]["risk_adjusted_edge_bps"] == 0.0
+    assert payload[0]["opportunity_type"] == "fallback-grade"
