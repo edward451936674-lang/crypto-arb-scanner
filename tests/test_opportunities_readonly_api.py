@@ -85,6 +85,7 @@ def test_opportunities_endpoint_returns_200_and_structure(tmp_path, monkeypatch)
         "route_key": "BTC:binance->okx",
         "rank": 1,
         "opportunity_type": "tradable",
+        "is_test": True,
     }
 
 
@@ -313,3 +314,76 @@ def test_opportunities_endpoint_combines_filters_sorting_top_n_and_is_determinis
     assert len(first_payload) == 2
     assert [item["symbol"] for item in first_payload] == ["SOL", "ETH"]
     assert [item["rank"] for item in first_payload] == [1, 2]
+
+
+def test_opportunities_endpoint_dashboard_scenario_with_test_snapshots(tmp_path, monkeypatch, capsys) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(  # dynamic actionable test snapshot
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=15,
+                replay_net_after_cost_bps=14,
+                estimated_net_edge_bps=13,
+                route_key="BTC:binance->okx",
+                is_test=True,
+            ),
+            _record(  # dynamic actionable test snapshot
+                symbol="ETH",
+                long_exchange="okx",
+                short_exchange="binance",
+                risk_adjusted_edge_bps=12,
+                replay_net_after_cost_bps=11,
+                estimated_net_edge_bps=10,
+                route_key="ETH:okx->binance",
+                is_test=True,
+            ),
+            _record(  # excluded by only_actionable
+                symbol="SOL",
+                long_exchange="okx",
+                short_exchange="bybit",
+                risk_adjusted_edge_bps=30,
+                replay_net_after_cost_bps=22,
+                estimated_net_edge_bps=20,
+                execution_mode="small_probe",
+                route_key="SOL:okx->bybit",
+                is_test=True,
+            ),
+            _record(  # excluded by symbols filter
+                symbol="XRP",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=50,
+                replay_net_after_cost_bps=40,
+                estimated_net_edge_bps=35,
+                route_key="XRP:binance->okx",
+                is_test=True,
+            ),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/v1/opportunities",
+        params={
+            "symbols": "BTC,ETH,SOL",
+            "top_n": 5,
+            "only_actionable": True,
+            "dedupe_by_route": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["symbol"] for item in payload] == ["BTC", "ETH"]
+    assert [item["rank"] for item in payload] == [1, 2]
+    assert all(item["is_test"] is True for item in payload)
+    assert payload[0]["risk_adjusted_edge_bps"] == 15
+    assert payload[1]["risk_adjusted_edge_bps"] == 12
+
+    print(payload[0])
+    captured = capsys.readouterr()
+    assert "BTC" in captured.out
