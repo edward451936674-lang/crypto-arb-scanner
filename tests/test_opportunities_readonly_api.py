@@ -1,45 +1,181 @@
-import time
-
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.models.market import MarketDataResponse, MarketSnapshot
-from app.services.market_data import MarketDataService
+from app.models.observation import ObservationRecord
+from app.storage.observations import ObservationStore
 
 
-def _snapshot(exchange: str, mark_price: float, funding_rate: float) -> MarketSnapshot:
-    ts_ms = int(time.time() * 1000)
-    return MarketSnapshot(
-        exchange=exchange,
-        venue_type="cex",
-        base_symbol="BTC",
-        normalized_symbol="BTC-USDT-PERP",
-        instrument_id=f"{exchange}-BTC",
-        mark_price=mark_price,
-        index_price=mark_price,
-        funding_rate=funding_rate,
-        funding_period_hours=8,
-        timestamp_ms=ts_ms,
+def _record(
+    *,
+    symbol: str,
+    long_exchange: str,
+    short_exchange: str,
+    risk_adjusted_edge_bps: float,
+    replay_net_after_cost_bps: float,
+    estimated_net_edge_bps: float,
+    execution_mode: str = "normal",
+    funding_confidence_label: str = "high",
+    conviction_label: str = "high",
+    route_key: str | None = None,
+    opportunity_type: str = "tradable",
+    observed_at_ms: int = 1_700_000_000_000,
+) -> ObservationRecord:
+    route = route_key or f"{symbol}:{long_exchange}->{short_exchange}"
+    return ObservationRecord(
+        observed_at_ms=observed_at_ms,
+        symbol=symbol,
+        cluster_id=f"{symbol}|{long_exchange}|{short_exchange}",
+        long_exchange=long_exchange,
+        short_exchange=short_exchange,
+        estimated_net_edge_bps=estimated_net_edge_bps,
+        opportunity_grade=opportunity_type,
+        execution_mode=execution_mode,
+        final_position_pct=0.01,
+        replay_net_after_cost_bps=replay_net_after_cost_bps,
+        raw_opportunity_json={
+            "symbol": symbol,
+            "long_exchange": long_exchange,
+            "short_exchange": short_exchange,
+            "price_spread_bps": 5.0,
+            "funding_spread_bps": 2.0,
+            "risk_adjusted_edge_bps": risk_adjusted_edge_bps,
+            "net_edge_bps": estimated_net_edge_bps,
+            "route_key": route,
+            "execution_mode": execution_mode,
+            "funding_confidence_label": funding_confidence_label,
+            "conviction_label": conviction_label,
+            "opportunity_type": opportunity_type,
+        },
     )
 
 
-def test_opportunities_endpoint_returns_200_and_btc_opportunity(monkeypatch) -> None:
-    async def fake_fetch_snapshots(self: MarketDataService, symbols: list[str]) -> MarketDataResponse:
-        return MarketDataResponse(
-            requested_symbols=symbols,
-            snapshots=[
-                _snapshot("binance", mark_price=100.0, funding_rate=-0.0001),
-                _snapshot("okx", mark_price=101.0, funding_rate=0.0002),
-            ],
-            errors=[],
-        )
-
-    monkeypatch.setattr(MarketDataService, "fetch_snapshots", fake_fetch_snapshots)
+def test_opportunities_endpoint_returns_200_and_structure(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=20.0,
+                replay_net_after_cost_bps=15.0,
+                estimated_net_edge_bps=14.0,
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
     client = TestClient(app)
 
-    response = client.get("/api/v1/opportunities", params={"symbols": "BTC", "top_n": 10})
+    response = client.get("/api/v1/opportunities")
 
     assert response.status_code == 200
     payload = response.json()
     assert isinstance(payload, list)
-    assert any(item["symbol"] == "BTC" for item in payload)
+    assert payload[0] == {
+        "symbol": "BTC",
+        "long_exchange": "binance",
+        "short_exchange": "okx",
+        "price_spread_bps": 5.0,
+        "funding_spread_bps": 2.0,
+        "risk_adjusted_edge_bps": 20.0,
+        "replay_net_after_cost_bps": 15.0,
+        "estimated_net_edge_bps": 14.0,
+        "route_key": "BTC:binance->okx",
+        "rank": 1,
+        "opportunity_type": "tradable",
+    }
+
+
+def test_opportunities_endpoint_applies_top_n(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=30, replay_net_after_cost_bps=10, estimated_net_edge_bps=10),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=20, replay_net_after_cost_bps=10, estimated_net_edge_bps=10),
+            _record(symbol="SOL", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=10, replay_net_after_cost_bps=10, estimated_net_edge_bps=10),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities", params={"top_n": 2})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 2
+    assert [item["symbol"] for item in payload] == ["BTC", "ETH"]
+
+
+def test_opportunities_endpoint_only_actionable_filter(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=30, replay_net_after_cost_bps=12, estimated_net_edge_bps=11, execution_mode="paper"),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=28, replay_net_after_cost_bps=12, estimated_net_edge_bps=11, funding_confidence_label="low"),
+            _record(symbol="SOL", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=26, replay_net_after_cost_bps=12, estimated_net_edge_bps=11, conviction_label="low"),
+            _record(symbol="XRP", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=24, replay_net_after_cost_bps=12, estimated_net_edge_bps=11),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities", params={"only_actionable": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["symbol"] == "XRP"
+
+
+def test_opportunities_endpoint_sorts_and_dedupes_by_route(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=10,
+                replay_net_after_cost_bps=10,
+                estimated_net_edge_bps=9,
+                route_key="BTC:binance->okx",
+            ),
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=12,
+                replay_net_after_cost_bps=8,
+                estimated_net_edge_bps=8,
+                route_key="BTC:binance->okx",
+            ),
+            _record(
+                symbol="ETH",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=12,
+                replay_net_after_cost_bps=9,
+                estimated_net_edge_bps=7,
+                route_key="ETH:binance->okx",
+            ),
+            _record(
+                symbol="SOL",
+                long_exchange="binance",
+                short_exchange="okx",
+                risk_adjusted_edge_bps=12,
+                replay_net_after_cost_bps=9,
+                estimated_net_edge_bps=8,
+                route_key="SOL:binance->okx",
+            ),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities", params={"dedupe_by_route": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 3
+    assert [item["symbol"] for item in payload] == ["SOL", "ETH", "BTC"]
+    assert payload[2]["risk_adjusted_edge_bps"] == 12
