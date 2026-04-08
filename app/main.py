@@ -103,21 +103,15 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok", "env": settings.app_env}
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(
-    symbols: str | None = Query(default=None),
-    top_n: int = Query(default=10, ge=1, le=500),
-    only_actionable: bool = Query(default=False),
-    dedupe_by_route: bool = Query(default=True),
-    refresh_seconds: int = Query(default=15, ge=5, le=300),
+def _render_dashboard_page(
+    *,
+    requested_symbols: list[str],
+    top_n: int,
+    only_actionable: bool,
+    dedupe_by_route: bool,
+    refresh_seconds: int,
+    final_opportunities: list[dict[str, object]],
 ) -> str:
-    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
-    final_opportunities = await get_opportunities(
-        symbols=",".join(requested_symbols),
-        top_n=top_n,
-        only_actionable=only_actionable,
-        dedupe_by_route=dedupe_by_route,
-    )
     rows = "".join(_render_dashboard_opportunity_row(item) for item in final_opportunities)
     only_actionable_checked = "checked" if only_actionable else ""
     dedupe_by_route_checked = "checked" if dedupe_by_route else ""
@@ -161,6 +155,48 @@ async def dashboard(
 </body>
 </html>
 """
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root_dashboard(
+    symbols: str | None = Query(default=None),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    dedupe_by_route: bool = Query(default=True),
+    refresh_seconds: int = Query(default=15, ge=5, le=300),
+) -> str:
+    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
+    final_opportunities = await get_opportunities(
+        symbols=",".join(requested_symbols),
+        top_n=top_n,
+        only_actionable=only_actionable,
+        dedupe_by_route=dedupe_by_route,
+    )
+    return _render_dashboard_page(
+        requested_symbols=requested_symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        dedupe_by_route=dedupe_by_route,
+        refresh_seconds=refresh_seconds,
+        final_opportunities=final_opportunities,
+    )
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(
+    symbols: str | None = Query(default=None),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    dedupe_by_route: bool = Query(default=True),
+    refresh_seconds: int = Query(default=15, ge=5, le=300),
+) -> str:
+    return await root_dashboard(
+        symbols=symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        dedupe_by_route=dedupe_by_route,
+        refresh_seconds=refresh_seconds,
+    )
 
 
 @app.post("/api/v1/alerts/telegram/opportunities")
