@@ -166,11 +166,13 @@ async def root_dashboard(
     refresh_seconds: int = Query(default=15, ge=5, le=300),
 ) -> str:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
-    final_opportunities = await get_opportunities(
+    final_opportunities = list_opportunities(
         symbols=",".join(requested_symbols),
         top_n=top_n,
         only_actionable=only_actionable,
         dedupe_by_route=dedupe_by_route,
+        min_edge_bps=0.0,
+        min_score=0.0,
     )
     return _render_dashboard_page(
         requested_symbols=requested_symbols,
@@ -437,17 +439,14 @@ def _value_from_record_then_raw(
     return None
 
 
-@app.get("/api/v1/opportunities")
-async def get_opportunities(
-    symbols: str | None = Query(
-        default=None,
-        description="Comma separated base symbols, e.g. BTC,ETH,SOL",
-    ),
-    top_n: int = Query(default=10, ge=1, le=500),
-    only_actionable: bool = Query(default=False),
-    dedupe_by_route: bool = Query(default=True),
-    min_edge_bps: float = Query(default=0.0),
-    min_score: float = Query(default=0.0),
+def list_opportunities(
+    *,
+    symbols: str | None,
+    top_n: int,
+    only_actionable: bool,
+    dedupe_by_route: bool,
+    min_edge_bps: float,
+    min_score: float,
 ) -> list[dict[str, object]]:
     requested_symbols = parse_symbols(symbols) if symbols else None
     requested_symbol_set = {symbol.upper() for symbol in requested_symbols} if requested_symbols else None
@@ -571,6 +570,33 @@ async def get_opportunities(
     for index, item in enumerate(selected, start=1):
         item["rank"] = index
     return selected
+
+
+@app.get("/api/v1/opportunities")
+async def get_opportunities(
+    symbols: str | None = Query(
+        default=None,
+        description="Comma separated base symbols, e.g. BTC,ETH,SOL",
+    ),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    dedupe_by_route: bool = Query(default=True),
+    min_edge_bps: float = Query(default=0.0),
+    min_score: float = Query(default=0.0),
+) -> list[dict[str, object]]:
+    resolved_top_n = int(_coerce_float(top_n, default=10.0))
+    if resolved_top_n < 1:
+        resolved_top_n = 1
+    if resolved_top_n > 500:
+        resolved_top_n = 500
+    return list_opportunities(
+        symbols=symbols,
+        top_n=resolved_top_n,
+        only_actionable=_coerce_bool(only_actionable, default=False),
+        dedupe_by_route=_coerce_bool(dedupe_by_route, default=True),
+        min_edge_bps=_coerce_float(min_edge_bps, default=0.0),
+        min_score=_coerce_float(min_score, default=0.0),
+    )
 
 
 @app.post("/api/v1/observe/run")
