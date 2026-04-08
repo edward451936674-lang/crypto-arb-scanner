@@ -1,6 +1,7 @@
 from html import escape
 from dataclasses import dataclass
 import hashlib
+from itertools import combinations
 import time
 from datetime import datetime, timezone
 from typing import Literal
@@ -382,40 +383,93 @@ async def get_opportunities(
         default=None,
         description="Comma separated base symbols, e.g. BTC,ETH,SOL",
     ),
-    top_n: int | None = Query(default=None, ge=1, le=500),
-    min_edge_bps: float = Query(default=0.0),
-    min_score: float | None = Query(default=None),
-    symbol: str | None = Query(default=None, min_length=1),
+    top_n: int = Query(default=10, ge=1, le=500),
     only_actionable: bool = Query(default=False),
-    dedupe_by_route: bool = Query(default=False),
-) -> dict[str, object]:
-    top_n_value = top_n if isinstance(top_n, int) else None
-    min_edge_bps_value = float(min_edge_bps) if isinstance(min_edge_bps, int | float) else 0.0
-    min_score_value = float(min_score) if isinstance(min_score, int | float) else None
-    symbol_value = symbol if isinstance(symbol, str) else None
-    only_actionable_value = bool(only_actionable) if isinstance(only_actionable, bool) else False
-    dedupe_by_route_value = bool(dedupe_by_route) if isinstance(dedupe_by_route, bool) else False
+    dedupe_by_route: bool = Query(default=True),
+) -> list[dict[str, object]]:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
     try:
         scan_context = await _build_scan_context(requested_symbols)
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    final_symbol_filter = symbol_value.upper() if symbol_value else None
-    opportunities = _rank_and_filter_opportunities(
-        scan_context=scan_context,
-        min_edge_bps=min_edge_bps_value,
-        min_score=min_score_value,
-        symbol=final_symbol_filter,
-        only_actionable=only_actionable_value,
-        dedupe_by_route=dedupe_by_route_value,
-        top_n=top_n_value,
+
+    actionable_routes: set[tuple[str, str, str]] = set()
+    if only_actionable:
+        actionable_routes = {
+            (
+                opportunity.symbol.upper(),
+                opportunity.long_exchange.lower(),
+                opportunity.short_exchange.lower(),
+            )
+            for opportunity in scan_context.opportunities
+            if opportunity.execution_mode not in {"paper", "small_probe"}
+        }
+
+    snapshots_by_symbol: dict[str, list[MarketSnapshot]] = {}
+    for snapshot in scan_context.accepted_snapshots:
+        if snapshot.mark_price is None or snapshot.funding_rate is None:
+            continue
+        symbol_key = snapshot.base_symbol.upper()
+        snapshots_by_symbol.setdefault(symbol_key, []).append(snapshot)
+
+    opportunities: list[dict[str, object]] = []
+    for symbol_key in sorted(snapshots_by_symbol):
+        symbol_snapshots = snapshots_by_symbol[symbol_key]
+        for first, second in combinations(symbol_snapshots, 2):
+            if first.mark_price <= second.mark_price:
+                long_snapshot = first
+                short_snapshot = second
+            else:
+                long_snapshot = second
+                short_snapshot = first
+
+            route_key = (
+                symbol_key,
+                long_snapshot.exchange.lower(),
+                short_snapshot.exchange.lower(),
+            )
+            if only_actionable and route_key not in actionable_routes:
+                continue
+
+            min_mark_price = long_snapshot.mark_price
+            max_mark_price = short_snapshot.mark_price
+            price_spread_bps = ((max_mark_price - min_mark_price) / min_mark_price) * 10_000
+            funding_spread_bps = (short_snapshot.funding_rate - long_snapshot.funding_rate) * 10_000
+            estimated_net_edge_bps = price_spread_bps + funding_spread_bps
+
+            opportunities.append(
+                {
+                    "symbol": symbol_key,
+                    "long_exchange": long_snapshot.exchange,
+                    "short_exchange": short_snapshot.exchange,
+                    "price_spread_bps": price_spread_bps,
+                    "funding_spread_bps": funding_spread_bps,
+                    "estimated_net_edge_bps": estimated_net_edge_bps,
+                }
+            )
+
+    if dedupe_by_route:
+        best_by_route: dict[tuple[str, str, str], dict[str, object]] = {}
+        for item in opportunities:
+            route_key = (
+                str(item["symbol"]).upper(),
+                str(item["long_exchange"]).lower(),
+                str(item["short_exchange"]).lower(),
+            )
+            existing = best_by_route.get(route_key)
+            if existing is None or float(item["estimated_net_edge_bps"]) > float(existing["estimated_net_edge_bps"]):
+                best_by_route[route_key] = item
+        opportunities = list(best_by_route.values())
+
+    opportunities.sort(
+        key=lambda item: (
+            -float(item["estimated_net_edge_bps"]),
+            str(item["symbol"]),
+            str(item["long_exchange"]),
+            str(item["short_exchange"]),
+        )
     )
-    response = OpportunitiesResponse(
-        requested_symbols=scan_context.requested_symbols,
-        opportunities=opportunities,
-        snapshot_errors=scan_context.snapshot_errors,
-    )
-    return response.model_dump()
+    return opportunities[:top_n]
 
 
 @app.post("/api/v1/observe/run")
