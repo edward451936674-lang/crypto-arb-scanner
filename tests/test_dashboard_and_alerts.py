@@ -135,6 +135,69 @@ def test_dashboard_filters_are_forwarded_to_final_opportunities(monkeypatch) -> 
     assert captured["symbols"] == "BTC,ETH"
     assert captured["only_actionable"] is True
 
+
+def test_dashboard_top_n_limits_rendered_results_table_rows(monkeypatch) -> None:
+    def fake_opportunities(**_: object) -> list[dict[str, object]]:
+        return [
+            {
+                "rank": 1,
+                "symbol": "ETH",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 12.0,
+                "funding_spread_bps": 5.0,
+                "risk_adjusted_edge_bps": 30.0,
+                "replay_net_after_cost_bps": 18.0,
+                "estimated_net_edge_bps": 20.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "ETH:binance->okx",
+                "is_test": False,
+            },
+            {
+                "rank": 2,
+                "symbol": "BTC",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 8.0,
+                "funding_spread_bps": 3.0,
+                "risk_adjusted_edge_bps": 19.0,
+                "replay_net_after_cost_bps": 12.0,
+                "estimated_net_edge_bps": 13.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "BTC:binance->okx",
+                "is_test": False,
+            },
+            {
+                "rank": 3,
+                "symbol": "SOL",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 7.0,
+                "funding_spread_bps": 2.0,
+                "risk_adjusted_edge_bps": 15.0,
+                "replay_net_after_cost_bps": 9.0,
+                "estimated_net_edge_bps": 10.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "SOL:binance->okx",
+                "is_test": False,
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
+    client = TestClient(app)
+
+    response = client.get("/", params={"top_n": 1, "symbols": "BTC,ETH,SOL"})
+
+    assert response.status_code == 200
+    table_body = response.text.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+    assert "ETH" in table_body
+    assert "BTC" not in table_body
+    assert "SOL" not in table_body
+
+
 def test_why_not_tradable_label_scenarios() -> None:
     mixed_funding = _opportunity(execution_mode="paper")
     mixed_funding.risk_flags = ["mixed_funding_sources"]
