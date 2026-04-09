@@ -105,7 +105,7 @@ async def healthz() -> dict[str, str]:
 
 def _render_dashboard_page(
     *,
-    requested_symbols: list[str],
+    symbols_query: str | None,
     top_n: int,
     only_actionable: bool,
     dedupe_by_route: bool,
@@ -136,7 +136,7 @@ def _render_dashboard_page(
 <body>
   <h1>Live Opportunities Dashboard</h1>
   <form method="get" class="filters">
-    <label>symbol <input name="symbols" value="{escape(','.join(requested_symbols))}" /></label>
+    <label>symbol <input name="symbols" value="{escape(symbols_query or '')}" /></label>
     <label>top n <input name="top_n" type="number" min="1" max="500" value="{top_n}" /></label>
     <label>only actionable <input name="only_actionable" type="checkbox" value="true" {only_actionable_checked} /></label>
     <input type="hidden" name="dedupe_by_route" value="true" />
@@ -176,7 +176,7 @@ async def root_dashboard(
         min_score=0.0,
     )
     return _render_dashboard_page(
-        requested_symbols=requested_symbols,
+        symbols_query=symbols,
         top_n=top_n,
         only_actionable=only_actionable,
         dedupe_by_route=dedupe_by_route,
