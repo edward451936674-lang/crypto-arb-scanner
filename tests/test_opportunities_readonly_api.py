@@ -73,20 +73,20 @@ def test_opportunities_endpoint_returns_200_and_structure(tmp_path, monkeypatch)
     assert response.status_code == 200
     payload = response.json()
     assert isinstance(payload, list)
-    assert payload[0] == {
-        "symbol": "BTC",
-        "long_exchange": "binance",
-        "short_exchange": "okx",
-        "price_spread_bps": 5.0,
-        "funding_spread_bps": 2.0,
-        "risk_adjusted_edge_bps": 20.0,
-        "replay_net_after_cost_bps": 15.0,
-        "estimated_net_edge_bps": 14.0,
-        "route_key": "BTC:binance->okx",
-        "rank": 1,
-        "opportunity_type": "tradable",
-        "is_test": True,
-    }
+    item = payload[0]
+    assert item["symbol"] == "BTC"
+    assert item["long_exchange"] == "binance"
+    assert item["short_exchange"] == "okx"
+    assert item["price_spread_bps"] == 5.0
+    assert item["funding_spread_bps"] == 2.0
+    assert item["risk_adjusted_edge_bps"] == 20.0
+    assert item["replay_net_after_cost_bps"] == 15.0
+    assert item["estimated_net_edge_bps"] == 14.0
+    assert item["route_key"] == "BTC:binance->okx"
+    assert item["rank"] == 1
+    assert item["opportunity_type"] == "tradable"
+    assert item["execution_mode"] == "normal"
+    assert item["is_test"] is True
 
 
 def test_opportunities_endpoint_applies_top_n(tmp_path, monkeypatch) -> None:
@@ -520,9 +520,9 @@ def test_opportunities_endpoint_handles_invalid_raw_json_payloads_safely(tmp_pat
     assert len(payload) == 1
     assert payload[0]["symbol"] == "BTC"
     assert payload[0]["is_test"] is False
-    assert payload[0]["price_spread_bps"] == 0.0
-    assert payload[0]["funding_spread_bps"] == 0.0
-    assert payload[0]["risk_adjusted_edge_bps"] == 0.0
+    assert payload[0]["price_spread_bps"] is None
+    assert payload[0]["funding_spread_bps"] is None
+    assert payload[0]["risk_adjusted_edge_bps"] is None
     assert payload[0]["opportunity_type"] == "fallback-grade"
 
 
@@ -599,7 +599,7 @@ def test_opportunities_endpoint_prefers_dedicated_values_then_raw_then_defaults(
     assert btc["risk_adjusted_edge_bps"] == 17.0
     assert btc["replay_net_after_cost_bps"] == 9.0
     assert btc["estimated_net_edge_bps"] == 13.0
-    assert btc["opportunity_type"] == "dedicated-grade"
+    assert btc["opportunity_type"] == "raw-grade"
     assert btc["is_test"] is False
 
     eth = payload["ETH"]
@@ -612,10 +612,76 @@ def test_opportunities_endpoint_prefers_dedicated_values_then_raw_then_defaults(
     assert eth["is_test"] is True
 
     sol = payload["SOL"]
-    assert sol["price_spread_bps"] == 0.0
-    assert sol["funding_spread_bps"] == 0.0
-    assert sol["risk_adjusted_edge_bps"] == 0.0
-    assert sol["replay_net_after_cost_bps"] == 0.0
-    assert sol["estimated_net_edge_bps"] == 0.0
-    assert sol["opportunity_type"] == "unknown"
+    assert sol["price_spread_bps"] is None
+    assert sol["funding_spread_bps"] is None
+    assert sol["risk_adjusted_edge_bps"] is None
+    assert sol["replay_net_after_cost_bps"] is None
+    assert sol["estimated_net_edge_bps"] is None
+    assert sol["opportunity_type"] is None
     assert sol["is_test"] is False
+
+
+def test_opportunities_endpoint_surfaces_richer_real_observation_fields(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            ObservationRecord(
+                observed_at_ms=1_700_000_000_100,
+                symbol="BTC",
+                cluster_id="BTC|binance|okx",
+                long_exchange="binance",
+                short_exchange="okx",
+                estimated_net_edge_bps=13.5,
+                opportunity_grade="tradable",
+                execution_mode="normal",
+                final_position_pct=0.03,
+                replay_net_after_cost_bps=10.1,
+                replay_confidence_label="high",
+                replay_passes_min_trade_gate=True,
+                why_not_tradable="live candidate",
+                risk_flags=["none"],
+                replay_summary="net=10.10bps",
+                raw_opportunity_json={
+                    "symbol": "BTC",
+                    "long_exchange": "binance",
+                    "short_exchange": "okx",
+                    "price_spread_bps": 6.2,
+                    "funding_spread_bps": 3.1,
+                    "risk_adjusted_edge_bps": 11.4,
+                    "estimated_net_edge_bps": 13.5,
+                    "route_key": "BTC:binance->okx",
+                    "opportunity_type": "cash_and_carry",
+                    "execution_mode": "normal",
+                    "final_position_pct": 0.03,
+                    "why_not_tradable": "live candidate",
+                    "replay_confidence_label": "high",
+                    "replay_passes_min_trade_gate": True,
+                    "risk_flags": ["none"],
+                    "replay_summary": "net=10.10bps",
+                    "test": False,
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/opportunities", params={"top_n": 1})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["price_spread_bps"] == 6.2
+    assert payload[0]["funding_spread_bps"] == 3.1
+    assert payload[0]["risk_adjusted_edge_bps"] == 11.4
+    assert payload[0]["replay_net_after_cost_bps"] == 10.1
+    assert payload[0]["estimated_net_edge_bps"] == 13.5
+    assert payload[0]["route_key"] == "BTC:binance->okx"
+    assert payload[0]["opportunity_type"] == "cash_and_carry"
+    assert payload[0]["execution_mode"] == "normal"
+    assert payload[0]["final_position_pct"] == 0.03
+    assert payload[0]["why_not_tradable"] == "live candidate"
+    assert payload[0]["replay_confidence_label"] == "high"
+    assert payload[0]["replay_passes_min_trade_gate"] is True
+    assert payload[0]["risk_flags"] == ["none"]
+    assert payload[0]["replay_summary"] == "net=10.10bps"
+    assert payload[0]["is_test"] is False

@@ -62,9 +62,10 @@ def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
                 "risk_adjusted_edge_bps": 20.0,
                 "replay_net_after_cost_bps": 12.5,
                 "estimated_net_edge_bps": 14.0,
+                "execution_mode": "normal",
                 "opportunity_type": "tradable",
                 "route_key": "BTC:binance->okx",
-                "is_test": False,
+                "is_test": True,
             },
         ]
 
@@ -81,12 +82,15 @@ def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
     assert "estimated_net_edge_bps" in body
     assert "risk_adjusted_edge_bps" in body
     assert "opportunity_type" in body
+    assert "execution_mode" in body
     assert "route_key" in body
-    assert "is_test" in body
-    assert "replay_net_after_cost_bps" in body
     assert "12.50" in body
     assert "BTC:binance-&gt;okx" in body
-    assert "No opportunities." not in body
+    assert "badge-test" in body
+    assert "No opportunities match the selected filters." not in body
+    assert "name=\"top_n\"" in body
+    assert "name=\"symbols\"" in body
+    assert "name=\"only_actionable\"" in body
 
 
 def test_dashboard_shows_empty_state_when_no_opportunities(monkeypatch) -> None:
@@ -98,7 +102,7 @@ def test_dashboard_shows_empty_state_when_no_opportunities(monkeypatch) -> None:
     response = client.get("/")
     assert response.status_code == 200
     body = response.text
-    assert "No opportunities." in body
+    assert "No opportunities match the selected filters." in body
 
 
 def test_legacy_dashboard_route_still_serves_html(monkeypatch) -> None:
@@ -111,6 +115,25 @@ def test_legacy_dashboard_route_still_serves_html(monkeypatch) -> None:
     assert response.status_code == 200
     assert "Live Opportunities Dashboard" in response.text
 
+
+
+
+def test_dashboard_filters_are_forwarded_to_final_opportunities(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_opportunities(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
+    client = TestClient(app)
+
+    response = client.get("/", params={"top_n": 3, "symbols": "btc,eth", "only_actionable": True})
+
+    assert response.status_code == 200
+    assert captured["top_n"] == 3
+    assert captured["symbols"] == "BTC,ETH"
+    assert captured["only_actionable"] is True
 
 def test_why_not_tradable_label_scenarios() -> None:
     mixed_funding = _opportunity(execution_mode="paper")

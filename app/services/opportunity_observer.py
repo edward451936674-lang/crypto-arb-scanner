@@ -87,6 +87,26 @@ class OpportunityObserverService:
         for item in contexts:
             opportunity = item.opportunity
             route_id = opportunity.cluster_id or f"{opportunity.symbol}:{opportunity.long_exchange}->{opportunity.short_exchange}"
+            route_key = opportunity.route_key or f"{opportunity.symbol}:{opportunity.long_exchange.lower()}->{opportunity.short_exchange.lower()}"
+            raw_opportunity_json = opportunity.model_dump()
+            raw_opportunity_json.update(
+                {
+                    "price_spread_bps": opportunity.price_spread_bps,
+                    "funding_spread_bps": opportunity.funding_spread_bps,
+                    "risk_adjusted_edge_bps": opportunity.risk_adjusted_edge_bps,
+                    "estimated_net_edge_bps": opportunity.net_edge_bps,
+                    "route_key": route_key,
+                    "opportunity_type": opportunity.opportunity_type or opportunity.opportunity_grade,
+                    "execution_mode": opportunity.execution_mode,
+                    "final_position_pct": opportunity.final_position_pct,
+                    "why_not_tradable": item.why_not_tradable,
+                    "replay_confidence_label": item.replay_confidence_label,
+                    "replay_passes_min_trade_gate": item.replay_passes_min_trade_gate,
+                    "risk_flags": opportunity.risk_flags,
+                    "replay_summary": item.replay_summary,
+                    "replay_net_after_cost_bps": item.replay_net_after_cost_bps,
+                }
+            )
             records.append(
                 ObservationRecord(
                     observed_at_ms=observed_at_ms,
@@ -104,7 +124,7 @@ class OpportunityObserverService:
                     replay_passes_min_trade_gate=item.replay_passes_min_trade_gate,
                     risk_flags=opportunity.risk_flags,
                     replay_summary=item.replay_summary,
-                    raw_opportunity_json=opportunity.model_dump(),
+                    raw_opportunity_json=raw_opportunity_json,
                 )
             )
         return records

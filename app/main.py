@@ -1,7 +1,6 @@
 from html import escape
 from dataclasses import dataclass
 import hashlib
-import json
 import time
 from datetime import datetime, timezone
 from typing import Literal
@@ -49,6 +48,7 @@ from app.services.opportunity_replay import OpportunityReplayService
 from app.storage.observations import ObservationStore
 from app.services.telegram_notifier import TelegramNotifier, TelegramNotifierConfig
 from app.services.alert_memory import AlertCandidate, AlertMemoryService
+from app.services.final_opportunities import FinalOpportunitiesFilters, list_final_opportunities
 from app.services.research_summary import ResearchSummaryService
 
 settings = get_settings()
@@ -114,7 +114,6 @@ def _render_dashboard_page(
 ) -> str:
     rows = "".join(_render_dashboard_opportunity_row(item) for item in final_opportunities)
     only_actionable_checked = "checked" if only_actionable else ""
-    dedupe_by_route_checked = "checked" if dedupe_by_route else ""
     return f"""
 <!doctype html>
 <html>
@@ -128,8 +127,10 @@ def _render_dashboard_page(
     th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
     th {{ background: #f7f7f7; }}
     h2 {{ margin-top: 26px; }}
-    .filters {{ margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }}
+    .filters {{ margin-bottom: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }}
     input, select {{ padding: 4px; }}
+    .badge-test {{ display: inline-block; background: #fff1f0; color: #b42318; border: 1px solid #fecdca; border-radius: 999px; padding: 1px 7px; font-size: 12px; font-weight: 700; }}
+    .muted {{ color: #667085; }}
   </style>
 </head>
 <body>
@@ -138,8 +139,8 @@ def _render_dashboard_page(
     <label>symbol <input name="symbols" value="{escape(','.join(requested_symbols))}" /></label>
     <label>top n <input name="top_n" type="number" min="1" max="500" value="{top_n}" /></label>
     <label>only actionable <input name="only_actionable" type="checkbox" value="true" {only_actionable_checked} /></label>
-    <label>dedupe by route <input name="dedupe_by_route" type="checkbox" value="true" {dedupe_by_route_checked} /></label>
-    <label>refresh sec <input name="refresh_seconds" type="number" min="5" max="300" value="{refresh_seconds}" /></label>
+    <input type="hidden" name="dedupe_by_route" value="true" />
+    <input type="hidden" name="refresh_seconds" value="{refresh_seconds}" />
     <button type="submit">Apply</button>
   </form>
   <table>
@@ -147,10 +148,10 @@ def _render_dashboard_page(
       <tr>
         <th>rank</th><th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>price_spread_bps</th>
         <th>funding_spread_bps</th><th>risk_adjusted_edge_bps</th><th>replay_net_after_cost_bps</th>
-        <th>estimated_net_edge_bps</th><th>opportunity_type</th><th>route_key</th><th>is_test</th>
+        <th>estimated_net_edge_bps</th><th>execution_mode</th><th>opportunity_type</th><th>route_key</th><th>is_test</th>
       </tr>
     </thead>
-    <tbody>{rows or "<tr><td colspan='12'>No opportunities.</td></tr>"}</tbody>
+    <tbody>{rows or "<tr><td colspan='13' class='muted'>No opportunities match the selected filters.</td></tr>"}</tbody>
   </table>
 </body>
 </html>
@@ -410,35 +411,6 @@ def _coerce_float(value: object, *, default: float = 0.0) -> float:
         return default
 
 
-def _safe_raw_opportunity_json(raw_value: object) -> dict[str, object]:
-    if isinstance(raw_value, dict):
-        return raw_value
-    if isinstance(raw_value, str):
-        try:
-            parsed = json.loads(raw_value)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-
-def _value_from_record_then_raw(
-    record: ObservationRecord,
-    raw: dict[str, object],
-    *,
-    record_field: str,
-    raw_keys: list[str],
-) -> object | None:
-    record_value = getattr(record, record_field, None)
-    if record_value is not None:
-        return record_value
-    for key in raw_keys:
-        value = raw.get(key)
-        if value is not None:
-            return value
-    return None
-
-
 def list_opportunities(
     *,
     symbols: str | None,
@@ -448,128 +420,17 @@ def list_opportunities(
     min_edge_bps: float,
     min_score: float,
 ) -> list[dict[str, object]]:
-    requested_symbols = parse_symbols(symbols) if symbols else None
-    requested_symbol_set = {symbol.upper() for symbol in requested_symbols} if requested_symbols else None
-
-    records = observation_store.latest(limit=5000)
-    opportunities: list[dict[str, object]] = []
-    for record in records:
-        symbol_key = record.symbol.upper()
-        if requested_symbol_set is not None and symbol_key not in requested_symbol_set:
-            continue
-
-        raw = _safe_raw_opportunity_json(record.raw_opportunity_json)
-        execution_mode = str(raw.get("execution_mode", record.execution_mode or "")).lower()
-        funding_confidence_label = str(raw.get("funding_confidence_label", "")).lower()
-        conviction_label = str(raw.get("conviction_label", "")).lower()
-        if only_actionable and (
-            execution_mode in {"paper", "small_probe"}
-            or funding_confidence_label == "low"
-            or conviction_label == "low"
-        ):
-            continue
-
-        long_exchange = str(raw.get("long_exchange", record.long_exchange))
-        short_exchange = str(raw.get("short_exchange", record.short_exchange))
-        symbol = str(raw.get("symbol", record.symbol)).upper()
-        route_key = str(raw.get("route_key") or f"{symbol}:{long_exchange.lower()}->{short_exchange.lower()}")
-        risk_adjusted_edge_bps = _coerce_float(
-            _value_from_record_then_raw(
-                record,
-                raw,
-                record_field="risk_adjusted_edge_bps",
-                raw_keys=["risk_adjusted_edge_bps"],
-            ),
-            default=0.0,
-        )
-        replay_net_after_cost_bps = _coerce_float(
-            _value_from_record_then_raw(
-                record,
-                raw,
-                record_field="replay_net_after_cost_bps",
-                raw_keys=["replay_net_after_cost_bps"],
-            ),
-            default=0.0,
-        )
-        estimated_net_edge_bps = _coerce_float(
-            _value_from_record_then_raw(
-                record,
-                raw,
-                record_field="estimated_net_edge_bps",
-                raw_keys=["estimated_net_edge_bps", "net_edge_bps"],
-            ),
-            default=0.0,
-        )
-        price_spread_bps = _coerce_float(
-            _value_from_record_then_raw(record, raw, record_field="price_spread_bps", raw_keys=["price_spread_bps"]),
-            default=0.0,
-        )
-        funding_spread_bps = _coerce_float(
-            _value_from_record_then_raw(record, raw, record_field="funding_spread_bps", raw_keys=["funding_spread_bps"]),
-            default=0.0,
-        )
-        opportunity_type = str(
-            _value_from_record_then_raw(
-                record,
-                raw,
-                record_field="opportunity_grade",
-                raw_keys=["opportunity_type", "opportunity_grade"],
-            )
-            or "unknown"
-        )
-        if estimated_net_edge_bps < min_edge_bps or risk_adjusted_edge_bps < min_score:
-            continue
-
-        opportunities.append(
-            {
-                "symbol": symbol,
-                "long_exchange": long_exchange,
-                "short_exchange": short_exchange,
-                "price_spread_bps": price_spread_bps,
-                "funding_spread_bps": funding_spread_bps,
-                "risk_adjusted_edge_bps": risk_adjusted_edge_bps,
-                "replay_net_after_cost_bps": replay_net_after_cost_bps,
-                "estimated_net_edge_bps": estimated_net_edge_bps,
-                "route_key": route_key,
-                "opportunity_type": opportunity_type,
-                "is_test": _coerce_bool(raw.get("test"), default=False),
-            }
-        )
-
-    def _sort_tuple(item: dict[str, object]) -> tuple[float, float, float, str, str, str, str]:
-        return (
-            float(item["risk_adjusted_edge_bps"]),
-            float(item["replay_net_after_cost_bps"]),
-            float(item["estimated_net_edge_bps"]),
-            str(item["route_key"]),
-            str(item["symbol"]),
-            str(item["long_exchange"]),
-            str(item["short_exchange"]),
-        )
-
-    if dedupe_by_route:
-        best_by_route: dict[str, dict[str, object]] = {}
-        for item in opportunities:
-            item_route_key = str(item["route_key"])
-            existing = best_by_route.get(item_route_key)
-            if existing is None:
-                best_by_route[item_route_key] = item
-                continue
-
-            candidate_risk_adjusted_edge_bps = float(item["risk_adjusted_edge_bps"])
-            existing_risk_adjusted_edge_bps = float(existing["risk_adjusted_edge_bps"])
-            if candidate_risk_adjusted_edge_bps > existing_risk_adjusted_edge_bps:
-                best_by_route[item_route_key] = item
-                continue
-            if candidate_risk_adjusted_edge_bps == existing_risk_adjusted_edge_bps and _sort_tuple(item) > _sort_tuple(existing):
-                best_by_route[item_route_key] = item
-        opportunities = list(best_by_route.values())
-
-    opportunities.sort(key=_sort_tuple, reverse=True)
-    selected = opportunities[:top_n]
-    for index, item in enumerate(selected, start=1):
-        item["rank"] = index
-    return selected
+    return list_final_opportunities(
+        store=observation_store,
+        filters=FinalOpportunitiesFilters(
+            symbols=symbols,
+            top_n=top_n,
+            only_actionable=only_actionable,
+            dedupe_by_route=dedupe_by_route,
+            min_edge_bps=min_edge_bps,
+            min_score=min_score,
+        ),
+    )
 
 
 @app.get("/api/v1/opportunities")
@@ -1151,20 +1012,27 @@ def _render_dashboard_row(item: DashboardRow) -> str:
 
 
 def _render_dashboard_opportunity_row(item: dict[str, object]) -> str:
+    def _fmt_bps(value: object) -> str:
+        coerced = _coerce_float(value, default=float("nan"))
+        return f"{coerced:.2f}" if coerced == coerced else "—"
+
+    is_test = _coerce_bool(item.get("is_test"), default=False)
+    test_display = "<span class='badge-test'>TEST</span>" if is_test else ""
     return (
         "<tr>"
         f"<td>{int(item.get('rank', 0))}</td>"
         f"<td>{escape(str(item.get('symbol', '-')))}</td>"
         f"<td>{escape(str(item.get('long_exchange', '-')))}</td>"
         f"<td>{escape(str(item.get('short_exchange', '-')))}</td>"
-        f"<td>{_coerce_float(item.get('price_spread_bps'), default=0.0):.2f}</td>"
-        f"<td>{_coerce_float(item.get('funding_spread_bps'), default=0.0):.2f}</td>"
-        f"<td>{_coerce_float(item.get('risk_adjusted_edge_bps'), default=0.0):.2f}</td>"
-        f"<td>{_coerce_float(item.get('replay_net_after_cost_bps'), default=0.0):.2f}</td>"
-        f"<td>{_coerce_float(item.get('estimated_net_edge_bps'), default=0.0):.2f}</td>"
-        f"<td>{escape(str(item.get('opportunity_type', 'unknown')))}</td>"
+        f"<td>{_fmt_bps(item.get('price_spread_bps'))}</td>"
+        f"<td>{_fmt_bps(item.get('funding_spread_bps'))}</td>"
+        f"<td>{_fmt_bps(item.get('risk_adjusted_edge_bps'))}</td>"
+        f"<td>{_fmt_bps(item.get('replay_net_after_cost_bps'))}</td>"
+        f"<td>{_fmt_bps(item.get('estimated_net_edge_bps'))}</td>"
+        f"<td>{escape(str(item.get('execution_mode') or '-'))}</td>"
+        f"<td>{escape(str(item.get('opportunity_type') or 'unknown'))}</td>"
         f"<td>{escape(str(item.get('route_key', '-')))}</td>"
-        f"<td>{'yes' if _coerce_bool(item.get('is_test'), default=False) else 'no'}</td>"
+        f"<td>{test_display}</td>"
         "</tr>"
     )
 
