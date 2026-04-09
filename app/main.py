@@ -112,7 +112,7 @@ def _render_dashboard_page(
     refresh_seconds: int,
     final_opportunities: list[dict[str, object]],
 ) -> str:
-    rows = "".join(_render_dashboard_opportunity_row(item) for item in final_opportunities)
+    rows = "".join(_render_dashboard_opportunity_row(item) for item in final_opportunities[:top_n])
     only_actionable_checked = "checked" if only_actionable else ""
     return f"""
 <!doctype html>
