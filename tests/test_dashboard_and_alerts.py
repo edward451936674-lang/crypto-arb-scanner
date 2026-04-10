@@ -65,6 +65,10 @@ def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
                 "execution_mode": "normal",
                 "opportunity_type": "tradable",
                 "route_key": "BTC:binance->okx",
+                "why_not_tradable": "min_notional_too_low",
+                "replay_confidence_label": "high",
+                "replay_passes_min_trade_gate": True,
+                "final_position_pct": 0.025,
                 "is_test": True,
             },
         ]
@@ -84,6 +88,14 @@ def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
     assert "opportunity_type" in body
     assert "execution_mode" in body
     assert "route_key" in body
+    assert "why_not_tradable" in body
+    assert "replay_confidence_label" in body
+    assert "replay_passes_min_trade_gate" in body
+    assert "final_position_pct" in body
+    assert "min_notional_too_low" in body
+    assert "high" in body
+    assert "yes" in body
+    assert "2.50%" in body
     assert "12.50" in body
     assert "BTC:binance-&gt;okx" in body
     assert "badge-test" in body
@@ -91,6 +103,7 @@ def test_dashboard_route_returns_html(monkeypatch, tmp_path) -> None:
     assert "name=\"top_n\"" in body
     assert "name=\"symbols\"" in body
     assert "name=\"only_actionable\"" in body
+    assert "name=\"include_test\"" in body
 
 
 def test_dashboard_shows_empty_state_when_no_opportunities(monkeypatch) -> None:
@@ -128,12 +141,89 @@ def test_dashboard_filters_are_forwarded_to_final_opportunities(monkeypatch) -> 
     monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
     client = TestClient(app)
 
-    response = client.get("/", params={"top_n": 3, "symbols": "btc,eth", "only_actionable": True})
+    response = client.get(
+        "/",
+        params={"top_n": 3, "symbols": "btc,eth", "only_actionable": True, "include_test": False},
+    )
 
     assert response.status_code == 200
     assert captured["top_n"] == 3
     assert captured["symbols"] == "BTC,ETH"
     assert captured["only_actionable"] is True
+
+
+def test_dashboard_include_test_false_hides_test_rows(monkeypatch) -> None:
+    def fake_opportunities(**_: object) -> list[dict[str, object]]:
+        return [
+            {
+                "rank": 1,
+                "symbol": "BTC",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 5.0,
+                "funding_spread_bps": 2.0,
+                "risk_adjusted_edge_bps": 20.0,
+                "replay_net_after_cost_bps": 12.5,
+                "estimated_net_edge_bps": 14.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "BTC:binance->okx",
+                "is_test": True,
+            },
+            {
+                "rank": 2,
+                "symbol": "ETH",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 4.0,
+                "funding_spread_bps": 1.0,
+                "risk_adjusted_edge_bps": 10.0,
+                "replay_net_after_cost_bps": 9.0,
+                "estimated_net_edge_bps": 11.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "ETH:binance->okx",
+                "is_test": False,
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
+    client = TestClient(app)
+    response = client.get("/", params={"include_test": False})
+
+    assert response.status_code == 200
+    body = response.text
+    assert "ETH" in body
+    assert "BTC" not in body
+    assert "<span class='badge-test'>TEST</span>" not in body
+
+
+def test_dashboard_include_test_false_empty_state_for_test_only_rows(monkeypatch) -> None:
+    def fake_opportunities(**_: object) -> list[dict[str, object]]:
+        return [
+            {
+                "rank": 1,
+                "symbol": "BTC",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 5.0,
+                "funding_spread_bps": 2.0,
+                "risk_adjusted_edge_bps": 20.0,
+                "replay_net_after_cost_bps": 12.5,
+                "estimated_net_edge_bps": 14.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "BTC:binance->okx",
+                "is_test": True,
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
+    client = TestClient(app)
+    response = client.get("/", params={"include_test": False})
+
+    assert response.status_code == 200
+    assert "No non-test opportunities match the selected filters." in response.text
 
 
 def test_dashboard_top_n_limits_rendered_results_table_rows(monkeypatch) -> None:
