@@ -180,11 +180,13 @@ def _dashboard_final_opportunities(
     top_n: int,
     only_actionable: bool,
     dedupe_by_route: bool,
+    include_test: bool,
 ) -> list[dict[str, object]]:
     requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
+    query_top_n = top_n if include_test else 500
     return list_opportunities(
         symbols=",".join(requested_symbols),
-        top_n=top_n,
+        top_n=query_top_n,
         only_actionable=only_actionable,
         dedupe_by_route=dedupe_by_route,
         min_edge_bps=0.0,
@@ -206,6 +208,7 @@ async def root_dashboard(
         top_n=top_n,
         only_actionable=only_actionable,
         dedupe_by_route=dedupe_by_route,
+        include_test=include_test,
     )
     return _render_dashboard_page(
         symbols_query=symbols,
@@ -232,6 +235,7 @@ async def dashboard(
         top_n=top_n,
         only_actionable=only_actionable,
         dedupe_by_route=dedupe_by_route,
+        include_test=include_test,
     )
     return _render_dashboard_page(
         symbols_query=symbols,
