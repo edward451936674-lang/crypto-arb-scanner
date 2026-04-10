@@ -109,11 +109,24 @@ def _render_dashboard_page(
     top_n: int,
     only_actionable: bool,
     dedupe_by_route: bool,
+    include_test: bool,
     refresh_seconds: int,
     final_opportunities: list[dict[str, object]],
 ) -> str:
-    rows = "".join(_render_dashboard_opportunity_row(item) for item in final_opportunities[:top_n])
+    filtered_opportunities = (
+        final_opportunities
+        if include_test
+        else [item for item in final_opportunities if not _coerce_bool(item.get("is_test"), default=False)]
+    )
+    rows = "".join(_render_dashboard_opportunity_row(item) for item in filtered_opportunities[:top_n])
     only_actionable_checked = "checked" if only_actionable else ""
+    include_test_checked = "checked" if include_test else ""
+    if rows:
+        empty_state = "No opportunities match the selected filters."
+    elif not include_test and final_opportunities:
+        empty_state = "No non-test opportunities match the selected filters. Enable include test to view test rows."
+    else:
+        empty_state = "No opportunities match the selected filters."
     return f"""
 <!doctype html>
 <html>
@@ -139,6 +152,7 @@ def _render_dashboard_page(
     <label>symbol <input name="symbols" value="{escape(symbols_query or '')}" /></label>
     <label>top n <input name="top_n" type="number" min="1" max="500" value="{top_n}" /></label>
     <label>only actionable <input name="only_actionable" type="checkbox" value="true" {only_actionable_checked} /></label>
+    <label>include test <input name="include_test" type="checkbox" value="true" {include_test_checked} /></label>
     <input type="hidden" name="dedupe_by_route" value="true" />
     <input type="hidden" name="refresh_seconds" value="{refresh_seconds}" />
     <button type="submit">Apply</button>
@@ -148,14 +162,34 @@ def _render_dashboard_page(
       <tr>
         <th>rank</th><th>symbol</th><th>long_exchange</th><th>short_exchange</th><th>price_spread_bps</th>
         <th>funding_spread_bps</th><th>risk_adjusted_edge_bps</th><th>replay_net_after_cost_bps</th>
-        <th>estimated_net_edge_bps</th><th>execution_mode</th><th>opportunity_type</th><th>route_key</th><th>is_test</th>
+        <th>estimated_net_edge_bps</th><th>execution_mode</th><th>opportunity_type</th><th>route_key</th><th>why_not_tradable</th><th>replay_confidence_label</th><th>replay_passes_min_trade_gate</th><th>final_position_pct</th><th>is_test</th>
       </tr>
     </thead>
-    <tbody>{rows or "<tr><td colspan='13' class='muted'>No opportunities match the selected filters.</td></tr>"}</tbody>
+    <tbody>{rows or f"<tr><td colspan='17' class='muted'>{escape(empty_state)}</td></tr>"}</tbody>
   </table>
 </body>
 </html>
 """
+
+
+
+
+def _dashboard_final_opportunities(
+    *,
+    symbols: str | None,
+    top_n: int,
+    only_actionable: bool,
+    dedupe_by_route: bool,
+) -> list[dict[str, object]]:
+    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
+    return list_opportunities(
+        symbols=",".join(requested_symbols),
+        top_n=top_n,
+        only_actionable=only_actionable,
+        dedupe_by_route=dedupe_by_route,
+        min_edge_bps=0.0,
+        min_score=0.0,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -164,22 +198,21 @@ async def root_dashboard(
     top_n: int = Query(default=10, ge=1, le=500),
     only_actionable: bool = Query(default=False),
     dedupe_by_route: bool = Query(default=True),
+    include_test: bool = Query(default=True),
     refresh_seconds: int = Query(default=15, ge=5, le=300),
 ) -> str:
-    requested_symbols = parse_symbols(symbols) if symbols else settings.default_symbols
-    final_opportunities = list_opportunities(
-        symbols=",".join(requested_symbols),
+    final_opportunities = _dashboard_final_opportunities(
+        symbols=symbols,
         top_n=top_n,
         only_actionable=only_actionable,
         dedupe_by_route=dedupe_by_route,
-        min_edge_bps=0.0,
-        min_score=0.0,
     )
     return _render_dashboard_page(
         symbols_query=symbols,
         top_n=top_n,
         only_actionable=only_actionable,
         dedupe_by_route=dedupe_by_route,
+        include_test=include_test,
         refresh_seconds=refresh_seconds,
         final_opportunities=final_opportunities,
     )
@@ -191,14 +224,23 @@ async def dashboard(
     top_n: int = Query(default=10, ge=1, le=500),
     only_actionable: bool = Query(default=False),
     dedupe_by_route: bool = Query(default=True),
+    include_test: bool = Query(default=True),
     refresh_seconds: int = Query(default=15, ge=5, le=300),
 ) -> str:
-    return await root_dashboard(
+    final_opportunities = _dashboard_final_opportunities(
         symbols=symbols,
         top_n=top_n,
         only_actionable=only_actionable,
         dedupe_by_route=dedupe_by_route,
+    )
+    return _render_dashboard_page(
+        symbols_query=symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        dedupe_by_route=dedupe_by_route,
+        include_test=include_test,
         refresh_seconds=refresh_seconds,
+        final_opportunities=final_opportunities,
     )
 
 
@@ -1018,6 +1060,13 @@ def _render_dashboard_opportunity_row(item: dict[str, object]) -> str:
 
     is_test = _coerce_bool(item.get("is_test"), default=False)
     test_display = "<span class='badge-test'>TEST</span>" if is_test else ""
+    replay_passes_gate_display = (
+        "yes"
+        if item.get("replay_passes_min_trade_gate") is True
+        else "no" if item.get("replay_passes_min_trade_gate") is False else "-"
+    )
+    final_position = item.get("final_position_pct")
+    final_position_display = f"{float(final_position):.2%}" if isinstance(final_position, int | float) else "-"
     return (
         "<tr>"
         f"<td>{int(item.get('rank', 0))}</td>"
@@ -1032,6 +1081,10 @@ def _render_dashboard_opportunity_row(item: dict[str, object]) -> str:
         f"<td>{escape(str(item.get('execution_mode') or '-'))}</td>"
         f"<td>{escape(str(item.get('opportunity_type') or 'unknown'))}</td>"
         f"<td>{escape(str(item.get('route_key', '-')))}</td>"
+        f"<td>{escape(str(item.get('why_not_tradable') or '-'))}</td>"
+        f"<td>{escape(str(item.get('replay_confidence_label') or '-'))}</td>"
+        f"<td>{replay_passes_gate_display}</td>"
+        f"<td>{final_position_display}</td>"
         f"<td>{test_display}</td>"
         "</tr>"
     )
