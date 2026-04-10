@@ -88,25 +88,7 @@ class OpportunityObserverService:
             opportunity = item.opportunity
             route_id = opportunity.cluster_id or f"{opportunity.symbol}:{opportunity.long_exchange}->{opportunity.short_exchange}"
             route_key = opportunity.route_key or f"{opportunity.symbol}:{opportunity.long_exchange.lower()}->{opportunity.short_exchange.lower()}"
-            raw_opportunity_json = opportunity.model_dump()
-            raw_opportunity_json.update(
-                {
-                    "price_spread_bps": opportunity.price_spread_bps,
-                    "funding_spread_bps": opportunity.funding_spread_bps,
-                    "risk_adjusted_edge_bps": opportunity.risk_adjusted_edge_bps,
-                    "estimated_net_edge_bps": opportunity.net_edge_bps,
-                    "route_key": route_key,
-                    "opportunity_type": opportunity.opportunity_type or opportunity.opportunity_grade,
-                    "execution_mode": opportunity.execution_mode,
-                    "final_position_pct": opportunity.final_position_pct,
-                    "why_not_tradable": item.why_not_tradable,
-                    "replay_confidence_label": item.replay_confidence_label,
-                    "replay_passes_min_trade_gate": item.replay_passes_min_trade_gate,
-                    "risk_flags": opportunity.risk_flags,
-                    "replay_summary": item.replay_summary,
-                    "replay_net_after_cost_bps": item.replay_net_after_cost_bps,
-                }
-            )
+            raw_opportunity_json = self._build_raw_opportunity_json(item=item, route_key=route_key)
             records.append(
                 ObservationRecord(
                     observed_at_ms=observed_at_ms,
@@ -128,6 +110,36 @@ class OpportunityObserverService:
                 )
             )
         return records
+
+    @classmethod
+    def _build_raw_opportunity_json(
+        cls,
+        *,
+        item: OpportunityObservationContext,
+        route_key: str,
+    ) -> dict[str, object]:
+        opportunity = item.opportunity
+        raw_opportunity_json = opportunity.model_dump()
+        enriched_values: dict[str, object] = {
+            "price_spread_bps": opportunity.price_spread_bps,
+            "funding_spread_bps": opportunity.funding_spread_bps,
+            "risk_adjusted_edge_bps": opportunity.risk_adjusted_edge_bps,
+            "replay_net_after_cost_bps": item.replay_net_after_cost_bps,
+            "estimated_net_edge_bps": opportunity.net_edge_bps,
+            "route_key": route_key,
+            "opportunity_type": opportunity.opportunity_type or opportunity.opportunity_grade,
+            "execution_mode": opportunity.execution_mode,
+            "final_position_pct": opportunity.final_position_pct,
+            "why_not_tradable": item.why_not_tradable or None,
+            "replay_confidence_label": item.replay_confidence_label,
+            "replay_passes_min_trade_gate": item.replay_passes_min_trade_gate,
+            "risk_flags": opportunity.risk_flags,
+            "replay_summary": item.replay_summary,
+        }
+        for key, value in enriched_values.items():
+            if value is not None:
+                raw_opportunity_json[key] = value
+        return raw_opportunity_json
 
     def build_summary(
         self,

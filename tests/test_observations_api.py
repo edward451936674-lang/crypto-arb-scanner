@@ -283,3 +283,105 @@ def test_observe_routes_return_expected_fields(tmp_path, monkeypatch) -> None:
     history = asyncio.run(get_observation_history(symbol="BTC", limit=100))
     assert history["count"] == 1
     assert history["symbol"] == "BTC"
+
+
+def test_run_observation_collection_persists_richer_raw_opportunity_json_for_real_rows(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    monkeypatch.setattr("app.main.observation_store", store)
+
+    opportunity = _build_opportunity().model_copy(
+        update={
+            "route_key": None,
+            "opportunity_type": None,
+            "opportunity_grade": "tradable",
+            "execution_mode": "normal",
+            "final_position_pct": 0.025,
+            "risk_flags": ["mixed_funding_sources"],
+            "risk_adjusted_edge_bps": 10.8,
+        }
+    )
+    snapshots = [_snapshot("binance", 100.0, -0.0002), _snapshot("okx", 100.23, 0.0002)]
+
+    async def fake_build_scan_context(requested_symbols: list[str]) -> _ScanContext:
+        return _ScanContext(
+            requested_symbols=requested_symbols,
+            opportunities=[opportunity],
+            snapshot_errors=[],
+            accepted_snapshots=snapshots,
+        )
+
+    monkeypatch.setattr("app.main._build_scan_context", fake_build_scan_context)
+
+    run_response = asyncio.run(run_observation_collection(symbols="BTC"))
+    assert run_response["stored_count"] == 1
+
+    latest = store.latest(limit=1)[0]
+    raw = latest.raw_opportunity_json
+
+    assert raw["price_spread_bps"] == opportunity.price_spread_bps
+    assert raw["funding_spread_bps"] == opportunity.funding_spread_bps
+    assert raw["risk_adjusted_edge_bps"] == 10.8
+    assert raw["estimated_net_edge_bps"] == opportunity.net_edge_bps
+    assert raw["route_key"] == "BTC:binance->okx"
+    assert raw["opportunity_type"] == "tradable"
+    assert raw["execution_mode"] == "normal"
+    assert raw["final_position_pct"] == 0.025
+    assert raw["why_not_tradable"] in {"live candidate", "mixed funding semantics"}
+    assert raw["replay_confidence_label"] in {"high", "medium", "low", "very_low"}
+    assert isinstance(raw["replay_passes_min_trade_gate"], bool)
+    assert raw["risk_flags"] == ["mixed_funding_sources"]
+    assert isinstance(raw["replay_summary"], str)
+    assert isinstance(raw["replay_net_after_cost_bps"], float)
+
+
+def test_opportunities_reads_rich_fields_from_real_observe_run_row(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    monkeypatch.setattr("app.main.observation_store", store)
+
+    opportunity = _build_opportunity().model_copy(
+        update={
+            "route_key": None,
+            "opportunity_type": None,
+            "opportunity_grade": "tradable",
+            "execution_mode": "normal",
+            "final_position_pct": 0.02,
+            "risk_flags": [],
+            "risk_adjusted_edge_bps": 9.6,
+        }
+    )
+    snapshots = [_snapshot("binance", 100.0, -0.0002), _snapshot("okx", 100.23, 0.0002)]
+
+    async def fake_build_scan_context(requested_symbols: list[str]) -> _ScanContext:
+        return _ScanContext(
+            requested_symbols=requested_symbols,
+            opportunities=[opportunity],
+            snapshot_errors=[],
+            accepted_snapshots=snapshots,
+        )
+
+    monkeypatch.setattr("app.main._build_scan_context", fake_build_scan_context)
+    asyncio.run(run_observation_collection(symbols="BTC"))
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.get("/api/v1/opportunities", params={"symbols": "BTC", "top_n": 1})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    item = payload[0]
+
+    assert item["price_spread_bps"] == opportunity.price_spread_bps
+    assert item["funding_spread_bps"] == opportunity.funding_spread_bps
+    assert item["risk_adjusted_edge_bps"] == 9.6
+    assert item["estimated_net_edge_bps"] == opportunity.net_edge_bps
+    assert item["route_key"] == "BTC:binance->okx"
+    assert item["opportunity_type"] == "tradable"
+    assert item["execution_mode"] == "normal"
+    assert item["final_position_pct"] == 0.02
+    assert item["replay_confidence_label"] in {"high", "medium", "low", "very_low"}
+    assert isinstance(item["replay_passes_min_trade_gate"], bool)
+    assert isinstance(item["replay_summary"], str)
+    assert item["is_test"] is False
