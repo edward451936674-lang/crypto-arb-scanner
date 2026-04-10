@@ -143,13 +143,78 @@ def test_dashboard_filters_are_forwarded_to_final_opportunities(monkeypatch) -> 
 
     response = client.get(
         "/",
-        params={"top_n": 3, "symbols": "btc,eth", "only_actionable": True, "include_test": False},
+        params={"top_n": 3, "symbols": "btc,eth", "only_actionable": True, "include_test": True},
     )
 
     assert response.status_code == 200
     assert captured["top_n"] == 3
     assert captured["symbols"] == "BTC,ETH"
     assert captured["only_actionable"] is True
+
+
+def test_dashboard_include_test_false_applies_top_n_after_test_filter(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_opportunities(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return [
+            {
+                "rank": 1,
+                "symbol": "BTC",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 9.0,
+                "funding_spread_bps": 3.0,
+                "risk_adjusted_edge_bps": 19.0,
+                "replay_net_after_cost_bps": 11.0,
+                "estimated_net_edge_bps": 13.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "BTC:binance->okx",
+                "is_test": True,
+            },
+            {
+                "rank": 2,
+                "symbol": "ETH",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 8.0,
+                "funding_spread_bps": 2.0,
+                "risk_adjusted_edge_bps": 18.0,
+                "replay_net_after_cost_bps": 10.0,
+                "estimated_net_edge_bps": 12.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "ETH:binance->okx",
+                "is_test": False,
+            },
+            {
+                "rank": 3,
+                "symbol": "SOL",
+                "long_exchange": "binance",
+                "short_exchange": "okx",
+                "price_spread_bps": 7.0,
+                "funding_spread_bps": 2.0,
+                "risk_adjusted_edge_bps": 16.0,
+                "replay_net_after_cost_bps": 9.0,
+                "estimated_net_edge_bps": 11.0,
+                "execution_mode": "normal",
+                "opportunity_type": "tradable",
+                "route_key": "SOL:binance->okx",
+                "is_test": False,
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "list_opportunities", fake_opportunities)
+    client = TestClient(app)
+    response = client.get("/", params={"include_test": False, "top_n": 2})
+
+    assert response.status_code == 200
+    assert captured["top_n"] == 500
+    body = response.text
+    assert "ETH" in body
+    assert "SOL" in body
+    assert "BTC" not in body
 
 
 def test_dashboard_include_test_false_hides_test_rows(monkeypatch) -> None:
