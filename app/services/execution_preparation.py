@@ -159,6 +159,8 @@ def to_paper_execution_records(candidates: list[ExecutionCandidate], *, created_
         has_entry_prices = (
             candidate.entry_reference_price_long is not None
             and candidate.entry_reference_price_short is not None
+            and candidate.entry_reference_price_long > 0
+            and candidate.entry_reference_price_short > 0
         )
         initial_pnl_bps = 0.0 if has_entry_prices else None
         initial_pnl_usd = (

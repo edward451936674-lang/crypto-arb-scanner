@@ -638,14 +638,11 @@ async def mark_to_market_paper_executions(
     )
     candidates = build_execution_candidates(final_opportunities=final_opportunities, include_test=True, top_n=5000)
     candidates_by_route = {item.route_key: item for item in candidates}
-    candidates_by_symbol: dict[str, ExecutionCandidate] = {}
-    for item in candidates:
-        candidates_by_symbol.setdefault(item.symbol.upper(), item)
 
     now_ms = int(time.time() * 1000)
     outcome_counts: dict[str, int] = {}
     for record in records:
-        candidate = candidates_by_route.get(record.route_key) or candidates_by_symbol.get(record.symbol.upper())
+        candidate = candidates_by_route.get(record.route_key)
         latest_long = None if candidate is None else candidate.entry_reference_price_long
         latest_short = None if candidate is None else candidate.entry_reference_price_short
         entry_long = record.entry_reference_price_long
