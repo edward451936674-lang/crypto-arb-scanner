@@ -637,12 +637,17 @@ async def mark_to_market_paper_executions(
         min_score=0.0,
     )
     candidates = build_execution_candidates(final_opportunities=final_opportunities, include_test=True, top_n=5000)
-    candidates_by_route = {item.route_key: item for item in candidates}
+    candidates_by_route = {
+        str(item.route_key): item
+        for item in candidates
+        if str(item.route_key or "").strip()
+    }
 
     now_ms = int(time.time() * 1000)
     outcome_counts: dict[str, int] = {}
     for record in records:
-        candidate = candidates_by_route.get(record.route_key)
+        record_route_key = str(record.route_key or "").strip()
+        candidate = candidates_by_route.get(record_route_key) if record_route_key else None
         latest_long = None if candidate is None else candidate.entry_reference_price_long
         latest_short = None if candidate is None else candidate.entry_reference_price_short
         entry_long = record.entry_reference_price_long
