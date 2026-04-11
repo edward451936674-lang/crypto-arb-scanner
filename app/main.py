@@ -638,7 +638,7 @@ async def mark_to_market_paper_executions(
     )
     candidates = build_execution_candidates(final_opportunities=final_opportunities, include_test=True, top_n=5000)
     candidates_by_route = {
-        str(item.route_key): item
+        str(item.route_key or "").strip(): item
         for item in candidates
         if str(item.route_key or "").strip()
     }

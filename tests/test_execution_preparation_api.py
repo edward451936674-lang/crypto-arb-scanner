@@ -600,6 +600,60 @@ def test_mark_to_market_keeps_unknown_when_route_key_is_missing_even_if_symbol_e
     assert row[5] == "unknown"
 
 
+def test_mark_to_market_matches_route_key_after_whitespace_normalization(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    route_key = "BTC:binance->okx"
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                route_key=route_key,
+                long_price=100.0,
+                short_price=100.0,
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+    create_response = client.post("/api/v1/paper-executions/from-candidates", params={"top_n": 10, "include_test": False})
+    assert create_response.status_code == 200
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM observations")
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                route_key=f"  {route_key}  ",
+                long_price=101.0,
+                short_price=99.0,
+            )
+        ]
+    )
+
+    response = client.post("/api/v1/paper-executions/mark-to-market", params={"top_n": 10})
+    assert response.status_code == 200
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT latest_reference_price_long, latest_reference_price_short, paper_pnl_bps, outcome_status
+            FROM paper_executions
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row[0] == 101.0
+    assert row[1] == 99.0
+    assert round(float(row[2]), 6) == 200.0
+    assert row[3] == "positive"
+
+
 def test_execution_candidate_endpoints_do_not_require_network_calls(tmp_path, monkeypatch) -> None:
     store = ObservationStore(str(tmp_path / "observations.sqlite3"))
     store.insert_many([_record(symbol="BTC", long_exchange="binance", short_exchange="okx")])
