@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
@@ -23,6 +23,7 @@ from app.models.market import (
     ReplayPreviewItem,
     ReplayPreviewResponse,
 )
+from app.models.execution import ExecutionCandidate
 from app.models.observation import ObservationRecord
 from app.services.arbitrage_scanner import ArbitrageScannerService
 from app.services.data_quality_gate import MarketDataQualityGate
@@ -49,6 +50,7 @@ from app.storage.observations import ObservationStore
 from app.services.telegram_notifier import TelegramNotifier, TelegramNotifierConfig
 from app.services.alert_memory import AlertCandidate, AlertMemoryService
 from app.services.final_opportunities import FinalOpportunitiesFilters, list_final_opportunities
+from app.services.execution_preparation import build_execution_candidates, to_paper_execution_records
 from app.services.research_summary import ResearchSummaryService
 
 settings = get_settings()
@@ -96,6 +98,8 @@ class _ScanContext:
     opportunities: list[Opportunity]
     snapshot_errors: list[object]
     accepted_snapshots: list[MarketSnapshot]
+
+
 
 
 @app.get("/healthz")
@@ -477,6 +481,88 @@ def list_opportunities(
             min_score=min_score,
         ),
     )
+
+
+
+
+def list_execution_candidates(
+    *,
+    symbols: str | None,
+    top_n: int,
+    only_actionable: bool,
+    include_test: bool,
+) -> list[dict[str, object]]:
+    query_top_n = 500 if include_test else top_n
+    final_opportunities = list_opportunities(
+        symbols=symbols,
+        top_n=query_top_n,
+        only_actionable=only_actionable,
+        dedupe_by_route=True,
+        min_edge_bps=0.0,
+        min_score=0.0,
+    )
+    candidates = build_execution_candidates(
+        final_opportunities=final_opportunities,
+        include_test=include_test,
+        top_n=top_n,
+    )
+    return [item.model_dump() for item in candidates]
+
+
+@app.get("/api/v1/execution/candidates")
+async def get_execution_candidates(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> list[dict[str, object]]:
+    resolved_top_n = int(_coerce_float(top_n, default=10.0))
+    if resolved_top_n < 1:
+        resolved_top_n = 1
+    if resolved_top_n > 500:
+        resolved_top_n = 500
+    return list_execution_candidates(
+        symbols=symbols,
+        top_n=resolved_top_n,
+        only_actionable=_coerce_bool(only_actionable, default=False),
+        include_test=_coerce_bool(include_test, default=False),
+    )
+
+
+@app.post("/api/v1/paper-executions/from-candidates")
+async def create_paper_executions_from_candidates(
+    payload: dict[str, list[str]] | None = Body(default=None),
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    route_keys_raw: list[str] = []
+    if payload is not None and isinstance(payload.get("route_keys"), list):
+        route_keys_raw = [str(item) for item in payload.get("route_keys", [])]
+    route_key_set = {item for item in route_keys_raw if item}
+
+    candidates = list_execution_candidates(
+        symbols=symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        include_test=include_test,
+    )
+    selected_candidates = candidates
+    if route_key_set:
+        selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
+
+    created_at_ms = int(time.time() * 1000)
+    records = to_paper_execution_records([ExecutionCandidate.model_validate(item) for item in selected_candidates], created_at_ms=created_at_ms)
+    inserted_count = observation_store.insert_paper_executions(records)
+
+    return {
+        "created_at_ms": created_at_ms,
+        "candidate_count": len(candidates),
+        "stored_count": inserted_count,
+        "stored_route_keys": [item.route_key for item in records],
+        "stored_symbols": sorted({item.symbol for item in records}),
+    }
 
 
 @app.get("/api/v1/opportunities")

@@ -2,6 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from app.models.execution import PaperExecutionRecord
 from app.models.observation import ObservationRecord
 
 
@@ -65,6 +66,37 @@ class ObservationStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_alert_events_identity_sent_at
                 ON alert_events(dedupe_identity, sent_at_ms DESC, id DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS paper_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at_ms INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    long_exchange TEXT NOT NULL,
+                    short_exchange TEXT NOT NULL,
+                    route_key TEXT NOT NULL,
+                    opportunity_type TEXT,
+                    execution_mode TEXT,
+                    target_position_pct REAL,
+                    target_notional_usd REAL,
+                    expected_edge_bps REAL,
+                    replay_net_after_cost_bps REAL,
+                    risk_adjusted_edge_bps REAL,
+                    is_executable_now INTEGER NOT NULL,
+                    why_not_executable TEXT,
+                    replay_confidence_label TEXT,
+                    replay_passes_min_trade_gate INTEGER,
+                    risk_flags TEXT,
+                    raw_execution_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_paper_executions_created_at
+                ON paper_executions(created_at_ms DESC, id DESC)
                 """
             )
 
@@ -174,6 +206,72 @@ class ObservationStore:
             ).fetchall()
         return [self._row_to_alert_event(row) for row in rows]
 
+    def insert_paper_executions(self, records: list[PaperExecutionRecord]) -> int:
+        if not records:
+            return 0
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO paper_executions (
+                    created_at_ms,
+                    symbol,
+                    long_exchange,
+                    short_exchange,
+                    route_key,
+                    opportunity_type,
+                    execution_mode,
+                    target_position_pct,
+                    target_notional_usd,
+                    expected_edge_bps,
+                    replay_net_after_cost_bps,
+                    risk_adjusted_edge_bps,
+                    is_executable_now,
+                    why_not_executable,
+                    replay_confidence_label,
+                    replay_passes_min_trade_gate,
+                    risk_flags,
+                    raw_execution_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.created_at_ms,
+                        item.symbol,
+                        item.long_exchange,
+                        item.short_exchange,
+                        item.route_key,
+                        item.opportunity_type,
+                        item.execution_mode,
+                        item.target_position_pct,
+                        item.target_notional_usd,
+                        item.expected_edge_bps,
+                        item.replay_net_after_cost_bps,
+                        item.risk_adjusted_edge_bps,
+                        int(item.is_executable_now),
+                        item.why_not_executable,
+                        item.replay_confidence_label,
+                        None if item.replay_passes_min_trade_gate is None else int(item.replay_passes_min_trade_gate),
+                        json.dumps(item.risk_flags),
+                        json.dumps(item.raw_execution_json),
+                    )
+                    for item in records
+                ],
+            )
+        return len(records)
+
+    def latest_paper_executions(self, limit: int = 100) -> list[PaperExecutionRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM paper_executions
+                ORDER BY created_at_ms DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_paper_execution(row) for row in rows]
+
     def _row_to_alert_event(self, row: sqlite3.Row) -> dict[str, object]:
         raw_gate = row["replay_passes_min_trade_gate"]
         return {
@@ -240,6 +338,30 @@ class ObservationStore:
                     message_hash,
                 ),
             )
+
+    def _row_to_paper_execution(self, row: sqlite3.Row) -> PaperExecutionRecord:
+        raw_gate = row["replay_passes_min_trade_gate"]
+        return PaperExecutionRecord(
+            id=row["id"],
+            created_at_ms=row["created_at_ms"],
+            symbol=row["symbol"],
+            long_exchange=row["long_exchange"],
+            short_exchange=row["short_exchange"],
+            route_key=row["route_key"],
+            opportunity_type=row["opportunity_type"],
+            execution_mode=row["execution_mode"],
+            target_position_pct=row["target_position_pct"],
+            target_notional_usd=row["target_notional_usd"],
+            expected_edge_bps=row["expected_edge_bps"],
+            replay_net_after_cost_bps=row["replay_net_after_cost_bps"],
+            risk_adjusted_edge_bps=row["risk_adjusted_edge_bps"],
+            is_executable_now=bool(row["is_executable_now"]),
+            why_not_executable=row["why_not_executable"],
+            replay_confidence_label=row["replay_confidence_label"],
+            replay_passes_min_trade_gate=None if raw_gate is None else bool(raw_gate),
+            risk_flags=json.loads(row["risk_flags"] or "[]"),
+            raw_execution_json=json.loads(row["raw_execution_json"] or "{}"),
+        )
 
     def _row_to_record(self, row: sqlite3.Row) -> ObservationRecord:
         raw_passes = row["replay_passes_min_trade_gate"]
