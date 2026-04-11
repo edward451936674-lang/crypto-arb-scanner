@@ -641,11 +641,11 @@ async def mark_to_market_paper_executions(
         min_score=0.0,
     )
     candidates = build_execution_candidates(final_opportunities=final_opportunities, include_test=True, top_n=5000)
-    candidates_by_route = {
-        _normalize_route_key(item.route_key): item
-        for item in candidates
-        if _normalize_route_key(item.route_key)
-    }
+    candidates_by_route = {}
+    for item in candidates:
+        candidate_route_key = _normalize_route_key(item.route_key)
+        if candidate_route_key:
+            candidates_by_route[candidate_route_key] = item
 
     now_ms = int(time.time() * 1000)
     outcome_counts: dict[str, int] = {}
