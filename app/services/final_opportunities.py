@@ -137,6 +137,22 @@ def list_final_opportunities(
                 "long_exchange": long_exchange,
                 "short_exchange": short_exchange,
                 "price_spread_bps": price_spread_bps,
+                "long_price": _coerce_float(
+                    _value_from_record_then_raw(
+                        record,
+                        raw,
+                        record_field="long_price",
+                        raw_keys=["long_price", "long_mark_price", "long_reference_price"],
+                    )
+                ),
+                "short_price": _coerce_float(
+                    _value_from_record_then_raw(
+                        record,
+                        raw,
+                        record_field="short_price",
+                        raw_keys=["short_price", "short_mark_price", "short_reference_price"],
+                    )
+                ),
                 "funding_spread_bps": funding_spread_bps,
                 "risk_adjusted_edge_bps": risk_adjusted_edge_bps,
                 "replay_net_after_cost_bps": replay_net_after_cost_bps,

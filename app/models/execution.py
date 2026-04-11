@@ -29,6 +29,8 @@ class ExecutionCandidate(BaseModel):
     replay_confidence_label: str | None = None
     replay_passes_min_trade_gate: bool | None = None
     risk_flags: list[str] = Field(default_factory=list)
+    entry_reference_price_long: float | None = None
+    entry_reference_price_short: float | None = None
     generated_at_ms: int
     is_test: bool = False
 
@@ -61,4 +63,12 @@ class PaperExecutionRecord(BaseModel):
     latest_observed_edge_bps: float | None = None
     latest_replay_net_after_cost_bps: float | None = None
     latest_risk_adjusted_edge_bps: float | None = None
+    entry_reference_price_long: float | None = None
+    entry_reference_price_short: float | None = None
+    latest_reference_price_long: float | None = None
+    latest_reference_price_short: float | None = None
+    paper_pnl_bps: float | None = None
+    paper_pnl_usd: float | None = None
+    outcome_status: Literal["unknown", "flat", "positive", "negative"] = "unknown"
+    outcome_updated_at_ms: int
     raw_execution_json: dict[str, Any] = Field(default_factory=dict)

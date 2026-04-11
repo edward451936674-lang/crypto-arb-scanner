@@ -513,6 +513,7 @@ def list_paper_executions(
     *,
     top_n: int,
     status: str | None,
+    outcome_status: str | None,
     symbols: str | None,
     include_test: bool,
 ) -> list[dict[str, object]]:
@@ -520,6 +521,7 @@ def list_paper_executions(
     records = observation_store.latest_paper_executions(
         limit=top_n,
         status=status,
+        outcome_status=outcome_status,
         symbols=normalized_symbols,
         include_test=include_test,
     )
@@ -587,15 +589,98 @@ async def get_paper_executions(
     symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
     top_n: int = Query(default=100, ge=1, le=500),
     status: Literal["planned", "expired", "still_valid", "invalidated"] | None = Query(default=None),
+    outcome_status: Literal["unknown", "flat", "positive", "negative"] | None = Query(default=None),
     include_test: bool = Query(default=False),
 ) -> dict[str, object]:
     items = list_paper_executions(
         top_n=top_n,
         status=status,
+        outcome_status=outcome_status,
         symbols=symbols,
         include_test=_coerce_bool(include_test, default=False),
     )
     return {"count": len(items), "items": items}
+
+
+def _paper_outcome_status_for_pnl(paper_pnl_bps: float | None) -> Literal["unknown", "flat", "positive", "negative"]:
+    if paper_pnl_bps is None:
+        return "unknown"
+    if abs(paper_pnl_bps) < 0.5:
+        return "flat"
+    if paper_pnl_bps >= 0.5:
+        return "positive"
+    return "negative"
+
+
+@app.post("/api/v1/paper-executions/mark-to-market")
+async def mark_to_market_paper_executions(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    top_n: int = Query(default=100, ge=1, le=500),
+    status: Literal["planned", "expired", "still_valid", "invalidated"] | None = Query(default=None),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    records = observation_store.latest_paper_executions(
+        limit=top_n,
+        status=status,
+        symbols=parse_symbols(symbols) if symbols else None,
+        include_test=_coerce_bool(include_test, default=False),
+    )
+    if not records:
+        return {"evaluated_count": 0, "outcome_counts": {}}
+
+    final_opportunities = list_opportunities(
+        symbols=symbols,
+        top_n=5000,
+        only_actionable=False,
+        dedupe_by_route=True,
+        min_edge_bps=0.0,
+        min_score=0.0,
+    )
+    candidates = build_execution_candidates(final_opportunities=final_opportunities, include_test=True, top_n=5000)
+    candidates_by_route = {item.route_key: item for item in candidates}
+    candidates_by_symbol: dict[str, ExecutionCandidate] = {}
+    for item in candidates:
+        candidates_by_symbol.setdefault(item.symbol.upper(), item)
+
+    now_ms = int(time.time() * 1000)
+    outcome_counts: dict[str, int] = {}
+    for record in records:
+        candidate = candidates_by_route.get(record.route_key) or candidates_by_symbol.get(record.symbol.upper())
+        latest_long = None if candidate is None else candidate.entry_reference_price_long
+        latest_short = None if candidate is None else candidate.entry_reference_price_short
+        entry_long = record.entry_reference_price_long
+        entry_short = record.entry_reference_price_short
+
+        paper_pnl_bps: float | None = None
+        if (
+            entry_long is not None
+            and entry_short is not None
+            and latest_long is not None
+            and latest_short is not None
+            and entry_long > 0
+            and entry_short > 0
+        ):
+            long_leg_return_bps = (latest_long / entry_long - 1.0) * 10000.0
+            short_leg_return_bps = (1.0 - latest_short / entry_short) * 10000.0
+            paper_pnl_bps = long_leg_return_bps + short_leg_return_bps
+        paper_pnl_usd = (
+            None
+            if paper_pnl_bps is None or record.target_notional_usd is None
+            else record.target_notional_usd * paper_pnl_bps / 10000.0
+        )
+        outcome_status = _paper_outcome_status_for_pnl(paper_pnl_bps)
+        observation_store.update_paper_execution_outcome(
+            paper_execution_id=int(record.id or 0),
+            latest_reference_price_long=latest_long,
+            latest_reference_price_short=latest_short,
+            paper_pnl_bps=paper_pnl_bps,
+            paper_pnl_usd=paper_pnl_usd,
+            outcome_status=outcome_status,
+            outcome_updated_at_ms=now_ms,
+        )
+        outcome_counts[outcome_status] = outcome_counts.get(outcome_status, 0) + 1
+
+    return {"evaluated_count": len(records), "outcome_counts": outcome_counts}
 
 
 @app.post("/api/v1/paper-executions/evaluate")
