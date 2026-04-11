@@ -612,6 +612,10 @@ def _paper_outcome_status_for_pnl(paper_pnl_bps: float | None) -> Literal["unkno
     return "negative"
 
 
+def _normalize_route_key(route_key: str | None) -> str:
+    return str(route_key or "").strip()
+
+
 @app.post("/api/v1/paper-executions/mark-to-market")
 async def mark_to_market_paper_executions(
     symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
@@ -638,15 +642,15 @@ async def mark_to_market_paper_executions(
     )
     candidates = build_execution_candidates(final_opportunities=final_opportunities, include_test=True, top_n=5000)
     candidates_by_route = {
-        str(item.route_key or "").strip(): item
+        _normalize_route_key(item.route_key): item
         for item in candidates
-        if str(item.route_key or "").strip()
+        if _normalize_route_key(item.route_key)
     }
 
     now_ms = int(time.time() * 1000)
     outcome_counts: dict[str, int] = {}
     for record in records:
-        record_route_key = str(record.route_key or "").strip()
+        record_route_key = _normalize_route_key(record.route_key)
         candidate = candidates_by_route.get(record_route_key) if record_route_key else None
         latest_long = None if candidate is None else candidate.entry_reference_price_long
         latest_short = None if candidate is None else candidate.entry_reference_price_short

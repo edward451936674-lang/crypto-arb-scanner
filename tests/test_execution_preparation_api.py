@@ -638,6 +638,8 @@ def test_mark_to_market_matches_route_key_after_whitespace_normalization(tmp_pat
 
     response = client.post("/api/v1/paper-executions/mark-to-market", params={"top_n": 10})
     assert response.status_code == 200
+    payload = response.json()
+    assert payload["outcome_counts"].get("positive") == 1
 
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
