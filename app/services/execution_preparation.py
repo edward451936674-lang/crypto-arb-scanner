@@ -41,6 +41,14 @@ def _coerce_bool(value: object, *, default: bool = False) -> bool:
     return bool(value)
 
 
+def _resolve_reference_price(item: dict[str, object], *, side: str) -> float | None:
+    for key in (f"{side}_price", f"{side}_mark_price", f"{side}_reference_price"):
+        parsed = _coerce_float(item.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _normalize_risk_flags(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value]
@@ -121,6 +129,8 @@ def build_execution_candidates(
                     None if item.get("replay_passes_min_trade_gate") is None else _coerce_bool(item.get("replay_passes_min_trade_gate"))
                 ),
                 risk_flags=risk_flags,
+                entry_reference_price_long=_resolve_reference_price(item, side="long"),
+                entry_reference_price_short=_resolve_reference_price(item, side="short"),
                 generated_at_ms=generated_at_ms,
                 is_test=is_test,
             )
@@ -146,6 +156,18 @@ def to_paper_execution_records(candidates: list[ExecutionCandidate], *, created_
         payload = candidate.model_dump()
         expiry_window_ms = candidate.max_order_age_ms or DEFAULT_PAPER_EXECUTION_EXPIRY_MS
         expires_at_ms = created_at_ms + max(1, int(expiry_window_ms))
+        has_entry_prices = (
+            candidate.entry_reference_price_long is not None
+            and candidate.entry_reference_price_short is not None
+            and candidate.entry_reference_price_long > 0
+            and candidate.entry_reference_price_short > 0
+        )
+        initial_pnl_bps = 0.0 if has_entry_prices else None
+        initial_pnl_usd = (
+            None
+            if initial_pnl_bps is None or candidate.target_notional_usd is None
+            else candidate.target_notional_usd * initial_pnl_bps / 10000.0
+        )
         records.append(
             PaperExecutionRecord(
                 created_at_ms=created_at_ms,
@@ -169,6 +191,14 @@ def to_paper_execution_records(candidates: list[ExecutionCandidate], *, created_
                 status_updated_at_ms=created_at_ms,
                 expires_at_ms=expires_at_ms,
                 evaluation_due_at_ms=expires_at_ms,
+                entry_reference_price_long=candidate.entry_reference_price_long,
+                entry_reference_price_short=candidate.entry_reference_price_short,
+                latest_reference_price_long=candidate.entry_reference_price_long,
+                latest_reference_price_short=candidate.entry_reference_price_short,
+                paper_pnl_bps=initial_pnl_bps,
+                paper_pnl_usd=initial_pnl_usd,
+                outcome_status="flat" if has_entry_prices else "unknown",
+                outcome_updated_at_ms=created_at_ms,
                 raw_execution_json=payload,
             )
         )

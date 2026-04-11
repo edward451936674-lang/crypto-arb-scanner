@@ -98,6 +98,14 @@ class ObservationStore:
                     latest_observed_edge_bps REAL,
                     latest_replay_net_after_cost_bps REAL,
                     latest_risk_adjusted_edge_bps REAL,
+                    entry_reference_price_long REAL,
+                    entry_reference_price_short REAL,
+                    latest_reference_price_long REAL,
+                    latest_reference_price_short REAL,
+                    paper_pnl_bps REAL,
+                    paper_pnl_usd REAL,
+                    outcome_status TEXT NOT NULL DEFAULT 'unknown',
+                    outcome_updated_at_ms INTEGER NOT NULL DEFAULT 0,
                     raw_execution_json TEXT NOT NULL
                 )
                 """
@@ -255,8 +263,16 @@ class ObservationStore:
                     latest_observed_edge_bps,
                     latest_replay_net_after_cost_bps,
                     latest_risk_adjusted_edge_bps,
+                    entry_reference_price_long,
+                    entry_reference_price_short,
+                    latest_reference_price_long,
+                    latest_reference_price_short,
+                    paper_pnl_bps,
+                    paper_pnl_usd,
+                    outcome_status,
+                    outcome_updated_at_ms,
                     raw_execution_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -286,6 +302,14 @@ class ObservationStore:
                         item.latest_observed_edge_bps,
                         item.latest_replay_net_after_cost_bps,
                         item.latest_risk_adjusted_edge_bps,
+                        item.entry_reference_price_long,
+                        item.entry_reference_price_short,
+                        item.latest_reference_price_long,
+                        item.latest_reference_price_short,
+                        item.paper_pnl_bps,
+                        item.paper_pnl_usd,
+                        item.outcome_status,
+                        item.outcome_updated_at_ms,
                         json.dumps(item.raw_execution_json),
                     )
                     for item in records
@@ -298,6 +322,7 @@ class ObservationStore:
         *,
         limit: int = 100,
         status: str | None = None,
+        outcome_status: str | None = None,
         symbols: list[str] | None = None,
         include_test: bool = False,
     ) -> list[PaperExecutionRecord]:
@@ -310,6 +335,9 @@ class ObservationStore:
             placeholders = ",".join(["?"] * len(symbols))
             predicates.append(f"UPPER(symbol) IN ({placeholders})")
             params.extend([item.upper() for item in symbols])
+        if outcome_status:
+            predicates.append("outcome_status = ?")
+            params.append(outcome_status)
         if not include_test:
             predicates.append("COALESCE(json_extract(raw_execution_json, '$.is_test'), 0) = 0")
 
@@ -364,6 +392,41 @@ class ObservationStore:
                     latest_observed_edge_bps,
                     latest_replay_net_after_cost_bps,
                     latest_risk_adjusted_edge_bps,
+                    paper_execution_id,
+                ),
+            )
+
+    def update_paper_execution_outcome(
+        self,
+        *,
+        paper_execution_id: int,
+        latest_reference_price_long: float | None,
+        latest_reference_price_short: float | None,
+        paper_pnl_bps: float | None,
+        paper_pnl_usd: float | None,
+        outcome_status: str,
+        outcome_updated_at_ms: int,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE paper_executions
+                SET
+                    latest_reference_price_long = ?,
+                    latest_reference_price_short = ?,
+                    paper_pnl_bps = ?,
+                    paper_pnl_usd = ?,
+                    outcome_status = ?,
+                    outcome_updated_at_ms = ?
+                WHERE id = ?
+                """,
+                (
+                    latest_reference_price_long,
+                    latest_reference_price_short,
+                    paper_pnl_bps,
+                    paper_pnl_usd,
+                    outcome_status,
+                    outcome_updated_at_ms,
                     paper_execution_id,
                 ),
             )
@@ -465,6 +528,14 @@ class ObservationStore:
             latest_observed_edge_bps=row["latest_observed_edge_bps"],
             latest_replay_net_after_cost_bps=row["latest_replay_net_after_cost_bps"],
             latest_risk_adjusted_edge_bps=row["latest_risk_adjusted_edge_bps"],
+            entry_reference_price_long=row["entry_reference_price_long"],
+            entry_reference_price_short=row["entry_reference_price_short"],
+            latest_reference_price_long=row["latest_reference_price_long"],
+            latest_reference_price_short=row["latest_reference_price_short"],
+            paper_pnl_bps=row["paper_pnl_bps"],
+            paper_pnl_usd=row["paper_pnl_usd"],
+            outcome_status=row["outcome_status"],
+            outcome_updated_at_ms=row["outcome_updated_at_ms"],
             raw_execution_json=json.loads(row["raw_execution_json"] or "{}"),
         )
 
@@ -489,6 +560,14 @@ class ObservationStore:
                 "latest_risk_adjusted_edge_bps",
                 "ALTER TABLE paper_executions ADD COLUMN latest_risk_adjusted_edge_bps REAL",
             ),
+            ("entry_reference_price_long", "ALTER TABLE paper_executions ADD COLUMN entry_reference_price_long REAL"),
+            ("entry_reference_price_short", "ALTER TABLE paper_executions ADD COLUMN entry_reference_price_short REAL"),
+            ("latest_reference_price_long", "ALTER TABLE paper_executions ADD COLUMN latest_reference_price_long REAL"),
+            ("latest_reference_price_short", "ALTER TABLE paper_executions ADD COLUMN latest_reference_price_short REAL"),
+            ("paper_pnl_bps", "ALTER TABLE paper_executions ADD COLUMN paper_pnl_bps REAL"),
+            ("paper_pnl_usd", "ALTER TABLE paper_executions ADD COLUMN paper_pnl_usd REAL"),
+            ("outcome_status", "ALTER TABLE paper_executions ADD COLUMN outcome_status TEXT NOT NULL DEFAULT 'unknown'"),
+            ("outcome_updated_at_ms", "ALTER TABLE paper_executions ADD COLUMN outcome_updated_at_ms INTEGER NOT NULL DEFAULT 0"),
         ]
         for column_name, statement in alter_statements:
             if column_name not in columns:

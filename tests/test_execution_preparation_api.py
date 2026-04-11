@@ -43,6 +43,8 @@ def _record(
     estimated_net_edge_bps: float = 14.0,
     route_key: str | None = None,
     is_test: bool = False,
+    long_price: float | None = 100.0,
+    short_price: float | None = 101.0,
 ) -> ObservationRecord:
     route = route_key or f"{symbol}:{long_exchange}->{short_exchange}"
     return ObservationRecord(
@@ -71,6 +73,8 @@ def _record(
             "risk_adjusted_edge_bps": risk_adjusted_edge_bps,
             "replay_net_after_cost_bps": replay_net_after_cost_bps,
             "estimated_net_edge_bps": estimated_net_edge_bps,
+            "long_price": long_price,
+            "short_price": short_price,
             "replay_passes_min_trade_gate": replay_passes_min_trade_gate,
             "replay_confidence_label": "high",
             "risk_flags": risk_flags or [],
@@ -173,7 +177,15 @@ def test_paper_executions_from_candidates_stores_new_table_rows(tmp_path, monkey
                 status_updated_at_ms,
                 expires_at_ms,
                 evaluation_due_at_ms,
-                target_notional_usd
+                target_notional_usd,
+                entry_reference_price_long,
+                entry_reference_price_short,
+                latest_reference_price_long,
+                latest_reference_price_short,
+                paper_pnl_bps,
+                paper_pnl_usd,
+                outcome_status,
+                outcome_updated_at_ms
             FROM paper_executions
             ORDER BY id DESC
             LIMIT 1
@@ -184,6 +196,92 @@ def test_paper_executions_from_candidates_stores_new_table_rows(tmp_path, monkey
     assert row[6] > payload["created_at_ms"]
     assert row[7] == row[6]
     assert row[8] is None
+    assert row[9] == 100.0
+    assert row[10] == 101.0
+    assert row[11] == 100.0
+    assert row[12] == 101.0
+    assert row[13] == 0.0
+    assert row[14] is None
+    assert row[15] == "flat"
+    assert row[16] == payload["created_at_ms"]
+
+
+def test_paper_executions_from_candidates_initializes_unknown_outcome_when_entry_prices_missing(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                long_price=None,
+                short_price=None,
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.post("/api/v1/paper-executions/from-candidates", params={"top_n": 5, "include_test": False})
+    assert response.status_code == 200
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                entry_reference_price_long,
+                entry_reference_price_short,
+                latest_reference_price_long,
+                latest_reference_price_short,
+                paper_pnl_bps,
+                paper_pnl_usd,
+                outcome_status
+            FROM paper_executions
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row == (None, None, None, None, None, None, "unknown")
+
+
+def test_paper_executions_from_candidates_initializes_unknown_outcome_when_entry_prices_non_positive(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                long_price=0.0,
+                short_price=-10.0,
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    response = client.post("/api/v1/paper-executions/from-candidates", params={"top_n": 5, "include_test": False})
+    assert response.status_code == 200
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                entry_reference_price_long,
+                entry_reference_price_short,
+                latest_reference_price_long,
+                latest_reference_price_short,
+                paper_pnl_bps,
+                paper_pnl_usd,
+                outcome_status
+            FROM paper_executions
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row == (0.0, -10.0, 0.0, -10.0, None, None, "unknown")
 
 
 def test_get_paper_executions_returns_stored_rows_with_filters(tmp_path, monkeypatch) -> None:
@@ -212,6 +310,32 @@ def test_get_paper_executions_returns_stored_rows_with_filters(tmp_path, monkeyp
     assert len(filtered_items) == 1
     assert filtered_items[0]["symbol"] == "BTC"
     assert filtered_items[0]["status"] == "planned"
+    assert "paper_pnl_bps" in filtered_items[0]
+
+
+def test_get_paper_executions_supports_outcome_status_filter(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx", long_price=100.0, short_price=101.0),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx", long_price=100.0, short_price=101.0),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+    create_response = client.post("/api/v1/paper-executions/from-candidates", params={"top_n": 10, "include_test": False})
+    assert create_response.status_code == 200
+
+    store.insert_many([_record(symbol="BTC", long_exchange="binance", short_exchange="okx", long_price=102.0, short_price=100.0)])
+    mark_response = client.post("/api/v1/paper-executions/mark-to-market", params={"top_n": 10})
+    assert mark_response.status_code == 200
+
+    positive_response = client.get("/api/v1/paper-executions", params={"top_n": 10, "outcome_status": "positive"})
+    assert positive_response.status_code == 200
+    positive_items = positive_response.json()["items"]
+    assert len(positive_items) == 1
+    assert positive_items[0]["symbol"] == "BTC"
 
 
 def test_paper_execution_evaluation_marks_expired_invalidated_and_still_valid(tmp_path, monkeypatch) -> None:
@@ -266,6 +390,113 @@ def test_observations_schema_is_unchanged(tmp_path) -> None:
     assert columns == EXPECTED_OBSERVATIONS_COLUMNS
 
 
+def test_mark_to_market_computes_positive_negative_and_unknown(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx", long_price=100.0, short_price=100.0),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx", long_price=100.0, short_price=100.0),
+            _record(symbol="SOL", long_exchange="binance", short_exchange="okx", long_price=None, short_price=None),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+    create_response = client.post("/api/v1/paper-executions/from-candidates", params={"top_n": 10, "include_test": False})
+    assert create_response.status_code == 200
+
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx", long_price=101.0, short_price=99.0),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx", long_price=99.0, short_price=101.0),
+        ]
+    )
+
+    response = client.post("/api/v1/paper-executions/mark-to-market", params={"top_n": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["evaluated_count"] == 3
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT symbol, paper_pnl_bps, outcome_status, latest_reference_price_long, latest_reference_price_short
+            FROM paper_executions
+            ORDER BY symbol ASC
+            """
+        ).fetchall()
+    by_symbol = {row[0]: row[1:] for row in rows}
+    assert round(float(by_symbol["BTC"][0]), 6) == 200.0
+    assert by_symbol["BTC"][1] == "positive"
+    assert round(float(by_symbol["ETH"][0]), 6) == -200.0
+    assert by_symbol["ETH"][1] == "negative"
+    assert by_symbol["SOL"][0] is None
+    assert by_symbol["SOL"][1] == "unknown"
+    assert by_symbol["SOL"][2] is None
+    assert by_symbol["SOL"][3] is None
+
+
+def test_mark_to_market_does_not_fallback_to_symbol_only_route_match(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    original_route = "BTC:binance->okx"
+    replacement_route = "BTC:bybit->okx"
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                route_key=original_route,
+                long_price=100.0,
+                short_price=100.0,
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+    create_response = client.post("/api/v1/paper-executions/from-candidates", params={"top_n": 10, "include_test": False})
+    assert create_response.status_code == 200
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM observations")
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="bybit",
+                short_exchange="okx",
+                route_key=replacement_route,
+                long_price=120.0,
+                short_price=80.0,
+            )
+        ]
+    )
+
+    response = client.post("/api/v1/paper-executions/mark-to-market", params={"top_n": 10})
+    assert response.status_code == 200
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                route_key,
+                latest_reference_price_long,
+                latest_reference_price_short,
+                paper_pnl_bps,
+                outcome_status
+            FROM paper_executions
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row[0] == original_route
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] is None
+    assert row[4] == "unknown"
+
+
 def test_execution_candidate_endpoints_do_not_require_network_calls(tmp_path, monkeypatch) -> None:
     store = ObservationStore(str(tmp_path / "observations.sqlite3"))
     store.insert_many([_record(symbol="BTC", long_exchange="binance", short_exchange="okx")])
@@ -281,11 +512,13 @@ def test_execution_candidate_endpoints_do_not_require_network_calls(tmp_path, mo
     post_response = client.post("/api/v1/paper-executions/from-candidates")
     list_response = client.get("/api/v1/paper-executions")
     eval_response = client.post("/api/v1/paper-executions/evaluate")
+    mark_response = client.post("/api/v1/paper-executions/mark-to-market")
 
     assert get_response.status_code == 200
     assert post_response.status_code == 200
     assert list_response.status_code == 200
     assert eval_response.status_code == 200
+    assert mark_response.status_code == 200
 
 
 def test_include_test_false_does_not_let_hidden_tests_consume_top_n_for_get_and_post(tmp_path, monkeypatch) -> None:
