@@ -89,14 +89,30 @@ class ObservationStore:
                     replay_confidence_label TEXT,
                     replay_passes_min_trade_gate INTEGER,
                     risk_flags TEXT,
+                    status TEXT NOT NULL DEFAULT 'planned',
+                    status_updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    expires_at_ms INTEGER NOT NULL DEFAULT 0,
+                    evaluation_due_at_ms INTEGER NOT NULL DEFAULT 0,
+                    closed_at_ms INTEGER,
+                    closure_reason TEXT,
+                    latest_observed_edge_bps REAL,
+                    latest_replay_net_after_cost_bps REAL,
+                    latest_risk_adjusted_edge_bps REAL,
                     raw_execution_json TEXT NOT NULL
                 )
                 """
             )
+            self._migrate_paper_executions(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_paper_executions_created_at
                 ON paper_executions(created_at_ms DESC, id DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_paper_executions_status_created_at
+                ON paper_executions(status, created_at_ms DESC, id DESC)
                 """
             )
 
@@ -230,8 +246,17 @@ class ObservationStore:
                     replay_confidence_label,
                     replay_passes_min_trade_gate,
                     risk_flags,
+                    status,
+                    status_updated_at_ms,
+                    expires_at_ms,
+                    evaluation_due_at_ms,
+                    closed_at_ms,
+                    closure_reason,
+                    latest_observed_edge_bps,
+                    latest_replay_net_after_cost_bps,
+                    latest_risk_adjusted_edge_bps,
                     raw_execution_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -252,6 +277,15 @@ class ObservationStore:
                         item.replay_confidence_label,
                         None if item.replay_passes_min_trade_gate is None else int(item.replay_passes_min_trade_gate),
                         json.dumps(item.risk_flags),
+                        item.status,
+                        item.status_updated_at_ms,
+                        item.expires_at_ms,
+                        item.evaluation_due_at_ms,
+                        item.closed_at_ms,
+                        item.closure_reason,
+                        item.latest_observed_edge_bps,
+                        item.latest_replay_net_after_cost_bps,
+                        item.latest_risk_adjusted_edge_bps,
                         json.dumps(item.raw_execution_json),
                     )
                     for item in records
@@ -259,18 +293,80 @@ class ObservationStore:
             )
         return len(records)
 
-    def latest_paper_executions(self, limit: int = 100) -> list[PaperExecutionRecord]:
+    def latest_paper_executions(
+        self,
+        *,
+        limit: int = 100,
+        status: str | None = None,
+        symbols: list[str] | None = None,
+        include_test: bool = False,
+    ) -> list[PaperExecutionRecord]:
+        predicates: list[str] = []
+        params: list[object] = []
+        if status:
+            predicates.append("status = ?")
+            params.append(status)
+        if symbols:
+            placeholders = ",".join(["?"] * len(symbols))
+            predicates.append(f"UPPER(symbol) IN ({placeholders})")
+            params.extend([item.upper() for item in symbols])
+        if not include_test:
+            predicates.append("COALESCE(json_extract(raw_execution_json, '$.is_test'), 0) = 0")
+
+        where_sql = ""
+        if predicates:
+            where_sql = f"WHERE {' AND '.join(predicates)}"
+
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM paper_executions
+                {where_sql}
                 ORDER BY created_at_ms DESC, id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
         return [self._row_to_paper_execution(row) for row in rows]
+
+    def update_paper_execution_lifecycle(
+        self,
+        *,
+        paper_execution_id: int,
+        status: str,
+        status_updated_at_ms: int,
+        closed_at_ms: int | None,
+        closure_reason: str | None,
+        latest_observed_edge_bps: float | None,
+        latest_replay_net_after_cost_bps: float | None,
+        latest_risk_adjusted_edge_bps: float | None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE paper_executions
+                SET
+                    status = ?,
+                    status_updated_at_ms = ?,
+                    closed_at_ms = ?,
+                    closure_reason = ?,
+                    latest_observed_edge_bps = ?,
+                    latest_replay_net_after_cost_bps = ?,
+                    latest_risk_adjusted_edge_bps = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    status_updated_at_ms,
+                    closed_at_ms,
+                    closure_reason,
+                    latest_observed_edge_bps,
+                    latest_replay_net_after_cost_bps,
+                    latest_risk_adjusted_edge_bps,
+                    paper_execution_id,
+                ),
+            )
 
     def _row_to_alert_event(self, row: sqlite3.Row) -> dict[str, object]:
         raw_gate = row["replay_passes_min_trade_gate"]
@@ -360,8 +456,43 @@ class ObservationStore:
             replay_confidence_label=row["replay_confidence_label"],
             replay_passes_min_trade_gate=None if raw_gate is None else bool(raw_gate),
             risk_flags=json.loads(row["risk_flags"] or "[]"),
+            status=row["status"],
+            status_updated_at_ms=row["status_updated_at_ms"],
+            expires_at_ms=row["expires_at_ms"],
+            evaluation_due_at_ms=row["evaluation_due_at_ms"],
+            closed_at_ms=row["closed_at_ms"],
+            closure_reason=row["closure_reason"],
+            latest_observed_edge_bps=row["latest_observed_edge_bps"],
+            latest_replay_net_after_cost_bps=row["latest_replay_net_after_cost_bps"],
+            latest_risk_adjusted_edge_bps=row["latest_risk_adjusted_edge_bps"],
             raw_execution_json=json.loads(row["raw_execution_json"] or "{}"),
         )
+
+    def _migrate_paper_executions(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(paper_executions)").fetchall()
+        }
+        alter_statements = [
+            ("status", "ALTER TABLE paper_executions ADD COLUMN status TEXT NOT NULL DEFAULT 'planned'"),
+            ("status_updated_at_ms", "ALTER TABLE paper_executions ADD COLUMN status_updated_at_ms INTEGER NOT NULL DEFAULT 0"),
+            ("expires_at_ms", "ALTER TABLE paper_executions ADD COLUMN expires_at_ms INTEGER NOT NULL DEFAULT 0"),
+            ("evaluation_due_at_ms", "ALTER TABLE paper_executions ADD COLUMN evaluation_due_at_ms INTEGER NOT NULL DEFAULT 0"),
+            ("closed_at_ms", "ALTER TABLE paper_executions ADD COLUMN closed_at_ms INTEGER"),
+            ("closure_reason", "ALTER TABLE paper_executions ADD COLUMN closure_reason TEXT"),
+            ("latest_observed_edge_bps", "ALTER TABLE paper_executions ADD COLUMN latest_observed_edge_bps REAL"),
+            (
+                "latest_replay_net_after_cost_bps",
+                "ALTER TABLE paper_executions ADD COLUMN latest_replay_net_after_cost_bps REAL",
+            ),
+            (
+                "latest_risk_adjusted_edge_bps",
+                "ALTER TABLE paper_executions ADD COLUMN latest_risk_adjusted_edge_bps REAL",
+            ),
+        ]
+        for column_name, statement in alter_statements:
+            if column_name not in columns:
+                conn.execute(statement)
 
     def _row_to_record(self, row: sqlite3.Row) -> ObservationRecord:
         raw_passes = row["replay_passes_min_trade_gate"]

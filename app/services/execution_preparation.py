@@ -4,6 +4,8 @@ import time
 
 from app.models.execution import ExecutionCandidate, ExecutionPlan, PaperExecutionRecord
 
+DEFAULT_PAPER_EXECUTION_EXPIRY_MS = 5 * 60 * 1000
+
 
 def _coerce_float(value: object) -> float | None:
     if value is None:
@@ -142,6 +144,8 @@ def to_paper_execution_records(candidates: list[ExecutionCandidate], *, created_
     records: list[PaperExecutionRecord] = []
     for candidate in candidates:
         payload = candidate.model_dump()
+        expiry_window_ms = candidate.max_order_age_ms or DEFAULT_PAPER_EXECUTION_EXPIRY_MS
+        expires_at_ms = created_at_ms + max(1, int(expiry_window_ms))
         records.append(
             PaperExecutionRecord(
                 created_at_ms=created_at_ms,
@@ -161,6 +165,10 @@ def to_paper_execution_records(candidates: list[ExecutionCandidate], *, created_
                 replay_confidence_label=candidate.replay_confidence_label,
                 replay_passes_min_trade_gate=candidate.replay_passes_min_trade_gate,
                 risk_flags=candidate.risk_flags,
+                status="planned",
+                status_updated_at_ms=created_at_ms,
+                expires_at_ms=expires_at_ms,
+                evaluation_due_at_ms=expires_at_ms,
                 raw_execution_json=payload,
             )
         )

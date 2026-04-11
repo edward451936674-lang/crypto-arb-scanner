@@ -163,9 +163,96 @@ def test_paper_executions_from_candidates_stores_new_table_rows(tmp_path, monkey
 
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
-            "SELECT symbol, route_key, execution_mode, is_executable_now FROM paper_executions ORDER BY id DESC LIMIT 1"
+            """
+            SELECT
+                symbol,
+                route_key,
+                execution_mode,
+                is_executable_now,
+                status,
+                status_updated_at_ms,
+                expires_at_ms,
+                evaluation_due_at_ms,
+                target_notional_usd
+            FROM paper_executions
+            ORDER BY id DESC
+            LIMIT 1
+            """
         ).fetchone()
-    assert row == ("BTC", "BTC:binance->okx", "normal", 1)
+    assert row[0:5] == ("BTC", "BTC:binance->okx", "normal", 1, "planned")
+    assert row[5] == payload["created_at_ms"]
+    assert row[6] > payload["created_at_ms"]
+    assert row[7] == row[6]
+    assert row[8] is None
+
+
+def test_get_paper_executions_returns_stored_rows_with_filters(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx", is_test=False),
+            _record(symbol="SOL", long_exchange="bybit", short_exchange="okx", is_test=True),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+    client.post("/api/v1/paper-executions/from-candidates", params={"top_n": 10, "include_test": True})
+
+    all_response = client.get("/api/v1/paper-executions", params={"top_n": 10, "include_test": True})
+    filtered_response = client.get(
+        "/api/v1/paper-executions",
+        params={"top_n": 10, "include_test": False, "symbols": "BTC", "status": "planned"},
+    )
+
+    assert all_response.status_code == 200
+    assert filtered_response.status_code == 200
+    assert {item["symbol"] for item in all_response.json()["items"]} == {"BTC", "SOL"}
+    filtered_items = filtered_response.json()["items"]
+    assert len(filtered_items) == 1
+    assert filtered_items[0]["symbol"] == "BTC"
+    assert filtered_items[0]["status"] == "planned"
+
+
+def test_paper_execution_evaluation_marks_expired_invalidated_and_still_valid(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx"),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx"),
+            _record(symbol="SOL", long_exchange="binance", short_exchange="okx"),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+    create_response = client.post("/api/v1/paper-executions/from-candidates", params={"top_n": 10, "include_test": False})
+    assert create_response.status_code == 200
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE paper_executions SET expires_at_ms = created_at_ms - 1 WHERE symbol = 'BTC'"
+        )
+        conn.execute(
+            "DELETE FROM observations WHERE symbol = 'ETH'"
+        )
+    eval_response = client.post("/api/v1/paper-executions/evaluate", params={"top_n": 10})
+    assert eval_response.status_code == 200
+    assert eval_response.json()["evaluated_count"] == 3
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT symbol, status, closure_reason, closed_at_ms, latest_observed_edge_bps
+            FROM paper_executions
+            ORDER BY symbol ASC
+            """
+        ).fetchall()
+    assert rows[0][0:3] == ("BTC", "expired", "expired")
+    assert rows[1][0:3] == ("ETH", "invalidated", "route_missing")
+    assert rows[2][0:3] == ("SOL", "still_valid", "still_valid")
+    assert rows[0][3] is not None and rows[1][3] is not None and rows[2][3] is not None
+    assert rows[2][4] is not None
 
 
 def test_observations_schema_is_unchanged(tmp_path) -> None:
@@ -192,9 +279,13 @@ def test_execution_candidate_endpoints_do_not_require_network_calls(tmp_path, mo
 
     get_response = client.get("/api/v1/execution/candidates")
     post_response = client.post("/api/v1/paper-executions/from-candidates")
+    list_response = client.get("/api/v1/paper-executions")
+    eval_response = client.post("/api/v1/paper-executions/evaluate")
 
     assert get_response.status_code == 200
     assert post_response.status_code == 200
+    assert list_response.status_code == 200
+    assert eval_response.status_code == 200
 
 
 def test_include_test_false_does_not_let_hidden_tests_consume_top_n_for_get_and_post(tmp_path, monkeypatch) -> None:
