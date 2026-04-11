@@ -195,3 +195,38 @@ def test_execution_candidate_endpoints_do_not_require_network_calls(tmp_path, mo
 
     assert get_response.status_code == 200
     assert post_response.status_code == 200
+
+
+def test_include_test_false_does_not_let_hidden_tests_consume_top_n_for_get_and_post(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "observations.sqlite3"
+    store = ObservationStore(str(db_path))
+    store.insert_many(
+        [
+            _record(symbol="TST1", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=100.0, is_test=True),
+            _record(symbol="TST2", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=99.0, is_test=True),
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=50.0, is_test=False),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=40.0, is_test=False),
+            _record(symbol="SOL", long_exchange="binance", short_exchange="okx", risk_adjusted_edge_bps=30.0, is_test=False),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+    client = TestClient(app)
+
+    candidates_response = client.get(
+        "/api/v1/execution/candidates",
+        params={"include_test": False, "top_n": 2},
+    )
+
+    assert candidates_response.status_code == 200
+    candidates_payload = candidates_response.json()
+    assert [item["symbol"] for item in candidates_payload] == ["BTC", "ETH"]
+
+    paper_response = client.post(
+        "/api/v1/paper-executions/from-candidates",
+        params={"include_test": False, "top_n": 2},
+    )
+
+    assert paper_response.status_code == 200
+    paper_payload = paper_response.json()
+    assert paper_payload["stored_count"] == 2
+    assert set(paper_payload["stored_symbols"]) == {"BTC", "ETH"}

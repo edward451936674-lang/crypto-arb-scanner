@@ -492,7 +492,7 @@ def list_execution_candidates(
     only_actionable: bool,
     include_test: bool,
 ) -> list[dict[str, object]]:
-    query_top_n = 500 if include_test else top_n
+    query_top_n = top_n if include_test else 500
     final_opportunities = list_opportunities(
         symbols=symbols,
         top_n=query_top_n,
