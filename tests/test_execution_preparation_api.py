@@ -600,7 +600,7 @@ def test_mark_to_market_keeps_unknown_when_route_key_is_missing_even_if_symbol_e
     assert row[5] == "unknown"
 
 
-def test_mark_to_market_matches_route_key_after_whitespace_normalization(tmp_path, monkeypatch) -> None:
+def test_mark_to_market_matches_candidate_route_key_after_whitespace_normalization(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "observations.sqlite3"
     store = ObservationStore(str(db_path))
     route_key = "BTC:binance->okx"
@@ -639,6 +639,7 @@ def test_mark_to_market_matches_route_key_after_whitespace_normalization(tmp_pat
     response = client.post("/api/v1/paper-executions/mark-to-market", params={"top_n": 10})
     assert response.status_code == 200
     payload = response.json()
+    assert payload["evaluated_count"] == 1
     assert payload["outcome_counts"].get("positive") == 1
 
     with sqlite3.connect(db_path) as conn:
