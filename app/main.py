@@ -509,6 +509,23 @@ def list_execution_candidates(
     return [item.model_dump() for item in candidates]
 
 
+def list_paper_executions(
+    *,
+    top_n: int,
+    status: str | None,
+    symbols: str | None,
+    include_test: bool,
+) -> list[dict[str, object]]:
+    normalized_symbols = parse_symbols(symbols) if symbols else None
+    records = observation_store.latest_paper_executions(
+        limit=top_n,
+        status=status,
+        symbols=normalized_symbols,
+        include_test=include_test,
+    )
+    return [item.model_dump() for item in records]
+
+
 @app.get("/api/v1/execution/candidates")
 async def get_execution_candidates(
     symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
@@ -563,6 +580,82 @@ async def create_paper_executions_from_candidates(
         "stored_route_keys": [item.route_key for item in records],
         "stored_symbols": sorted({item.symbol for item in records}),
     }
+
+
+@app.get("/api/v1/paper-executions")
+async def get_paper_executions(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    top_n: int = Query(default=100, ge=1, le=500),
+    status: Literal["planned", "expired", "still_valid", "invalidated"] | None = Query(default=None),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    items = list_paper_executions(
+        top_n=top_n,
+        status=status,
+        symbols=symbols,
+        include_test=_coerce_bool(include_test, default=False),
+    )
+    return {"count": len(items), "items": items}
+
+
+@app.post("/api/v1/paper-executions/evaluate")
+async def evaluate_paper_executions(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    top_n: int = Query(default=100, ge=1, le=500),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    planned_records = observation_store.latest_paper_executions(
+        limit=top_n,
+        status="planned",
+        symbols=parse_symbols(symbols) if symbols else None,
+        include_test=_coerce_bool(include_test, default=False),
+    )
+    if not planned_records:
+        return {"evaluated_count": 0, "status_counts": {}}
+
+    now_ms = int(time.time() * 1000)
+    final_opportunities = list_opportunities(
+        symbols=symbols,
+        top_n=5000,
+        only_actionable=False,
+        dedupe_by_route=True,
+        min_edge_bps=0.0,
+        min_score=0.0,
+    )
+    candidates = build_execution_candidates(final_opportunities=final_opportunities, include_test=True, top_n=5000)
+    candidates_by_route = {item.route_key: item for item in candidates}
+
+    status_counts: dict[str, int] = {}
+    for record in planned_records:
+        candidate = candidates_by_route.get(record.route_key)
+        next_status: Literal["expired", "still_valid", "invalidated"]
+        closure_reason: str
+        if now_ms > record.expires_at_ms:
+            next_status = "expired"
+            closure_reason = "expired"
+        elif candidate is None:
+            next_status = "invalidated"
+            closure_reason = "route_missing"
+        elif not candidate.is_executable_now:
+            next_status = "invalidated"
+            closure_reason = "no_longer_executable"
+        else:
+            next_status = "still_valid"
+            closure_reason = "still_valid"
+
+        observation_store.update_paper_execution_lifecycle(
+            paper_execution_id=int(record.id or 0),
+            status=next_status,
+            status_updated_at_ms=now_ms,
+            closed_at_ms=now_ms,
+            closure_reason=closure_reason,
+            latest_observed_edge_bps=None if candidate is None else candidate.expected_edge_bps,
+            latest_replay_net_after_cost_bps=None if candidate is None else candidate.replay_net_after_cost_bps,
+            latest_risk_adjusted_edge_bps=None if candidate is None else candidate.risk_adjusted_edge_bps,
+        )
+        status_counts[next_status] = status_counts.get(next_status, 0) + 1
+
+    return {"evaluated_count": len(planned_records), "status_counts": status_counts}
 
 
 @app.get("/api/v1/opportunities")

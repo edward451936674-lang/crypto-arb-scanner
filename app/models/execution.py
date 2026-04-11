@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -52,4 +52,13 @@ class PaperExecutionRecord(BaseModel):
     replay_confidence_label: str | None = None
     replay_passes_min_trade_gate: bool | None = None
     risk_flags: list[str] = Field(default_factory=list)
+    status: Literal["planned", "expired", "still_valid", "invalidated"] = "planned"
+    status_updated_at_ms: int
+    expires_at_ms: int
+    evaluation_due_at_ms: int
+    closed_at_ms: int | None = None
+    closure_reason: str | None = None
+    latest_observed_edge_bps: float | None = None
+    latest_replay_net_after_cost_bps: float | None = None
+    latest_risk_adjusted_edge_bps: float | None = None
     raw_execution_json: dict[str, Any] = Field(default_factory=dict)
