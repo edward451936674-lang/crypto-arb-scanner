@@ -152,6 +152,31 @@ class BalanceSnapshot(BaseModel):
     is_live: bool = False
 
 
+class VenueRequestPreview(BaseModel):
+    venue_id: str
+    operation: Literal["place_order", "cancel_order"]
+    route_key: str | None = None
+    intent_ref: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    validation_errors: list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    is_live: bool = False
+
+
+class VenueTranslationResult(BaseModel):
+    venue_id: str
+    operation: Literal["place_order", "cancel_order"]
+    normalized_intent_id: str | None = None
+    route_key: str | None = None
+    symbol: str | None = None
+    preview: VenueRequestPreview
+    accepted: bool
+    notes: str | None = None
+    is_live: bool = False
+
+
 class AdapterExecutionResult(BaseModel):
     venue_id: str
     operation: Literal["place_order", "cancel_order", "get_order_status", "get_position", "get_balance"]
@@ -162,4 +187,5 @@ class AdapterExecutionResult(BaseModel):
     balance: BalanceSnapshot | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     notes: str | None = None
+    translation: VenueTranslationResult | None = None
     is_live: bool = False

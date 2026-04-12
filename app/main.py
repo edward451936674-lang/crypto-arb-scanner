@@ -52,6 +52,7 @@ from app.services.alert_memory import AlertCandidate, AlertMemoryService
 from app.services.final_opportunities import FinalOpportunitiesFilters, list_final_opportunities
 from app.services.execution_preparation import build_execution_candidates, to_paper_execution_records
 from app.services.execution_intents import candidates_to_order_intents
+from app.execution_adapters.registry import get_execution_adapter
 from app.services.research_summary import ResearchSummaryService
 from app.venues.registry import list_venue_definitions
 
@@ -608,6 +609,61 @@ async def get_order_intent_preview(
         "selected_candidate_count": len(selected_candidates),
         "intent_count": len(intents),
         "items": [item.model_dump() for item in intents],
+    }
+
+
+@app.get("/api/v1/execution/venue-request-preview")
+async def get_venue_request_preview(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    route_keys: list[str] | None = Query(
+        default=None,
+        description="Repeat route_keys to filter preview to specific execution routes",
+    ),
+    venues: list[str] | None = Query(
+        default=None,
+        description="Repeat venues to filter translated intents by venue id",
+    ),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    route_key_set = {str(item) for item in (route_keys or []) if str(item)}
+    venue_set = {str(item).lower() for item in (venues or []) if str(item)}
+
+    candidates = list_execution_candidates(
+        symbols=symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        include_test=include_test,
+    )
+    selected_candidates = candidates
+    if route_key_set:
+        selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
+
+    intents = candidates_to_order_intents([ExecutionCandidate.model_validate(item) for item in selected_candidates])
+    selected_intents = intents
+    if venue_set:
+        selected_intents = [item for item in intents if item.venue_id.lower() in venue_set]
+
+    results = []
+    for intent in selected_intents:
+        adapter = get_execution_adapter(intent.venue_id)
+        translated = await adapter.place_order(intent)
+        results.append(
+            {
+                "intent": intent.model_dump(),
+                "translation": translated.model_dump(),
+            }
+        )
+
+    return {
+        "candidate_count": len(candidates),
+        "selected_candidate_count": len(selected_candidates),
+        "intent_count": len(intents),
+        "selected_intent_count": len(selected_intents),
+        "translation_count": len(results),
+        "is_live": False,
+        "items": results,
     }
 
 
