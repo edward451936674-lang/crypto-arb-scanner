@@ -104,6 +104,14 @@ class _ClassicExecutionAdapterStub(_ExecutionAdapterStubBase):
             warnings.append("time_in_force_missing_for_limit")
         return errors, warnings
 
+    def _validate_cancel(self, intent: CancelIntent) -> list[str]:
+        errors: list[str] = []
+        if not intent.order_id and not intent.client_order_id:
+            errors.append("order_id_or_client_order_id_required")
+        if not intent.symbol:
+            errors.append("symbol_required")
+        return errors
+
     async def place_order(self, intent: OrderIntent) -> AdapterExecutionResult:
         errors, warnings = self._validate_place(intent)
         preview = VenueRequestPreview(
@@ -135,9 +143,7 @@ class _ClassicExecutionAdapterStub(_ExecutionAdapterStubBase):
         )
 
     async def cancel_order(self, intent: CancelIntent) -> AdapterExecutionResult:
-        errors: list[str] = []
-        if not intent.order_id and not intent.client_order_id:
-            errors.append("order_id_or_client_order_id_required")
+        errors = self._validate_cancel(intent)
         preview = VenueRequestPreview(
             venue_id=self.venue_id,
             operation="cancel_order",
@@ -249,6 +255,14 @@ class _SignedActionExecutionAdapterStub(_ExecutionAdapterStubBase):
         warnings.append("payload_not_directly_sendable")
         return errors, warnings
 
+    def _validate_cancel(self, intent: CancelIntent) -> list[str]:
+        errors: list[str] = []
+        if not intent.order_id and not intent.client_order_id:
+            errors.append("order_id_or_client_order_id_required")
+        if not intent.symbol:
+            errors.append("symbol_required")
+        return errors
+
     async def place_order(self, intent: OrderIntent) -> AdapterExecutionResult:
         errors, warnings = self._validate_place(intent)
         preview = VenueRequestPreview(
@@ -280,10 +294,8 @@ class _SignedActionExecutionAdapterStub(_ExecutionAdapterStubBase):
         )
 
     async def cancel_order(self, intent: CancelIntent) -> AdapterExecutionResult:
-        errors: list[str] = []
+        errors = self._validate_cancel(intent)
         warnings = ["signature_not_implemented", "payload_not_directly_sendable"]
-        if not intent.order_id and not intent.client_order_id:
-            errors.append("order_id_or_client_order_id_required")
         preview = VenueRequestPreview(
             venue_id=self.venue_id,
             operation="cancel_order",

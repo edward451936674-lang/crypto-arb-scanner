@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.execution_adapters.registry import get_execution_adapter
@@ -10,7 +11,7 @@ from app.execution_adapters.stubs import (
     OkxExecutionAdapterStub,
 )
 from app.main import app
-from app.models.execution import OrderIntent
+from app.models.execution import CancelIntent, OrderIntent
 from app.models.observation import ObservationRecord
 from app.storage.observations import ObservationStore
 
@@ -105,11 +106,41 @@ def test_missing_required_fields_return_validation_errors() -> None:
     assert "quantity_required" in result.translation.preview.validation_errors
 
 
+@pytest.mark.parametrize(
+    ("adapter", "venue"),
+    [
+        (BinanceExecutionAdapterStub(), "binance"),
+        (OkxExecutionAdapterStub(), "okx"),
+        (HyperliquidExecutionAdapterStub(), "hyperliquid"),
+        (LighterExecutionAdapterStub(), "lighter"),
+    ],
+)
+def test_cancel_preview_requires_symbol_for_venue_specific_payload_fields(adapter, venue: str) -> None:
+    intent = CancelIntent(
+        venue_id=venue,
+        symbol=None,
+        order_id="oid-1",
+        client_order_id=None,
+        route_key=f"BTC:{venue}->paper",
+    )
+
+    result = asyncio.run(adapter.cancel_order(intent))
+
+    assert result.accepted is False
+    assert "symbol_required" in result.translation.preview.validation_errors
+    assert "order_id_or_client_order_id_required" not in result.translation.preview.validation_errors
+
+
 def test_adapter_registry_returns_expected_adapter_types() -> None:
     assert isinstance(get_execution_adapter("binance"), BinanceExecutionAdapterStub)
     assert isinstance(get_execution_adapter("okx"), OkxExecutionAdapterStub)
     assert isinstance(get_execution_adapter("hyperliquid"), HyperliquidExecutionAdapterStub)
     assert isinstance(get_execution_adapter("lighter"), LighterExecutionAdapterStub)
+
+
+def test_adapter_registry_unknown_venue_raises_explicit_error() -> None:
+    with pytest.raises(ValueError, match="unsupported_execution_venue:kraken"):
+        get_execution_adapter("kraken")
 
 
 def test_venue_request_preview_endpoint_translates_intents_by_venue(tmp_path, monkeypatch) -> None:
