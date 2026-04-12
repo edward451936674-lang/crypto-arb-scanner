@@ -52,6 +52,7 @@ from app.services.alert_memory import AlertCandidate, AlertMemoryService
 from app.services.final_opportunities import FinalOpportunitiesFilters, list_final_opportunities
 from app.services.execution_preparation import build_execution_candidates, to_paper_execution_records
 from app.services.research_summary import ResearchSummaryService
+from app.venues.registry import list_venue_definitions
 
 settings = get_settings()
 execution_account_state_provider: ExecutionAccountStateProvider = get_execution_account_state_provider(settings)
@@ -415,6 +416,17 @@ async def meta() -> dict[str, object]:
             "live_remaining_long_exchange_cap_pct": resolved_execution_policy.live_remaining_long_exchange_cap_pct,
             "live_remaining_short_exchange_cap_pct": resolved_execution_policy.live_remaining_short_exchange_cap_pct,
         },
+    }
+
+
+@app.get("/api/v1/execution/venue-capabilities")
+async def get_execution_venue_capabilities() -> dict[str, object]:
+    venues = [item.model_dump(mode="json") for item in list_venue_definitions()]
+    return {
+        "live_execution_enabled": False,
+        "live_execution_status": "not_enabled_in_this_repo",
+        "message": "Live execution adapters are intentionally not implemented yet.",
+        "venues": venues,
     }
 
 
