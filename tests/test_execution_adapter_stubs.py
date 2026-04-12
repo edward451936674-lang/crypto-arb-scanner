@@ -196,3 +196,35 @@ def test_venue_request_preview_endpoint_is_network_free(tmp_path, monkeypatch) -
     response = client.get("/api/v1/execution/venue-request-preview")
     assert response.status_code == 200
     assert response.json()["translation_count"] == 2
+
+
+@pytest.mark.parametrize("target_notional_usd", [0.0, -100.0])
+def test_venue_request_preview_endpoint_non_positive_target_notional_stays_unresolved(
+    tmp_path, monkeypatch, target_notional_usd: float
+) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                target_notional_usd=target_notional_usd,
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+
+    client = TestClient(app)
+    response = client.get("/api/v1/execution/venue-request-preview", params={"top_n": 1, "include_test": False})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolved_intent_count"] == 0
+    assert payload["unresolved_intent_count"] == 2
+    assert payload["quantity_resolution_statuses"] == ["unavailable"]
+    assert payload["quantity_resolution_warnings"] == ["target_notional_usd_non_positive"]
+    assert all(
+        "quantity_required" in item["translation"]["translation"]["preview"]["validation_errors"]
+        for item in payload["items"]
+    )

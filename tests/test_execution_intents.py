@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -199,6 +200,27 @@ def test_quantity_resolver_target_position_pct_only_does_not_fabricate_quantity(
     assert result.resolved_quantity_short is None
 
 
+@pytest.mark.parametrize("target_notional_usd", [0.0, -100.0])
+def test_quantity_resolver_non_positive_target_notional_is_unavailable(target_notional_usd: float) -> None:
+    candidate = ExecutionCandidate(
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        route_key="BTC:binance->okx",
+        generated_at_ms=1,
+        target_notional_usd=target_notional_usd,
+        entry_reference_price_long=100.0,
+        entry_reference_price_short=125.0,
+    )
+    result = quantity_resolver.resolve(candidate)
+
+    assert result.quantity_resolution_status == "unavailable"
+    assert result.quantity_resolution_source == "unavailable"
+    assert result.resolved_quantity_long is None
+    assert result.resolved_quantity_short is None
+    assert "target_notional_usd_non_positive" in result.warnings
+
+
 def test_order_intent_preview_endpoint_returns_translated_intents(tmp_path, monkeypatch) -> None:
     store = ObservationStore(str(tmp_path / "observations.sqlite3"))
     store.insert_many([_record(symbol="BTC", long_exchange="binance", short_exchange="okx")])
@@ -287,6 +309,37 @@ def test_order_intent_preview_endpoint_reports_unresolved_leg_when_reference_pri
     assert payload["unresolved_intent_count"] == 1
     assert payload["quantity_resolution_statuses"] == ["partial"]
     assert payload["unresolved_legs"][0]["leg"] == "short"
+
+
+@pytest.mark.parametrize("target_notional_usd", [0.0, -100.0])
+def test_order_intent_preview_endpoint_non_positive_target_notional_keeps_legs_unresolved(
+    tmp_path, monkeypatch, target_notional_usd: float
+) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(
+                symbol="BTC",
+                long_exchange="binance",
+                short_exchange="okx",
+                target_notional_usd=target_notional_usd,
+                long_price=100.0,
+                short_price=101.0,
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+
+    client = TestClient(app)
+    response = client.get("/api/v1/execution/order-intent-preview", params={"top_n": 1, "include_test": False})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolved_intent_count"] == 0
+    assert payload["unresolved_intent_count"] == 2
+    assert payload["quantity_resolution_statuses"] == ["unavailable"]
+    assert payload["quantity_resolution_warnings"] == ["target_notional_usd_non_positive"]
+    assert all(item["quantity"] is None for item in payload["items"])
 
 
 def test_observations_schema_is_unchanged_for_execution_intent_workflow(tmp_path) -> None:
