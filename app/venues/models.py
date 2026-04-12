@@ -37,6 +37,11 @@ class VenueCapabilities(BaseModel):
     supports_balances: bool
     paper_supported: bool
     live_supported_now: bool
+    supports_rest_trading_api: bool = False
+    supports_private_websocket_trading: bool = False
+    supports_signed_actions: bool = False
+    supports_sdk_recommended: bool = False
+    execution_interface_notes: str = ""
 
 
 class VenueDefinition(BaseModel):
