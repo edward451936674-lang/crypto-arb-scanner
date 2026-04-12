@@ -33,6 +33,13 @@ class ExecutionQuantityResolver:
                 warnings=["target_notional_usd_missing"],
                 notes="preview_only_quantity_unavailable",
             )
+        if target_notional <= 0:
+            return QuantityResolutionResult(
+                quantity_resolution_status="unavailable",
+                quantity_resolution_source=UNAVAILABLE,
+                warnings=["target_notional_usd_non_positive"],
+                notes="preview_only_quantity_unavailable",
+            )
 
         long_quantity = self._resolve_leg_quantity(
             target_notional,
