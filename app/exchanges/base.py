@@ -14,7 +14,7 @@ class ExchangeClientError(RuntimeError):
     pass
 
 
-class ExchangeClient(ABC):
+class BaseMarketAdapter(ABC):
     name: str
     venue_type: Literal["cex", "dex"] = "cex"
 
@@ -31,6 +31,13 @@ class ExchangeClient(ABC):
     @abstractmethod
     async def fetch_snapshots(self, specs: list[SymbolSpec]) -> list[MarketSnapshot]:
         raise NotImplementedError
+
+    @staticmethod
+    def normalize_symbol(spec: SymbolSpec) -> str:
+        return spec.normalized
+
+    def supports_snapshots(self) -> bool:
+        return True
 
     @staticmethod
     def _to_float(value: Any) -> float | None:
@@ -56,3 +63,7 @@ class ExchangeClient(ABC):
         if not isinstance(data, list):
             raise ExchangeClientError(f"Expected list payload field '{field_name}'")
         return data
+
+
+class ExchangeClient(BaseMarketAdapter):
+    """Backward-compatible alias used by existing venue clients."""

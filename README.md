@@ -96,6 +96,30 @@
 
 ---
 
+
+## Adding a New Venue / 新增交易所标准接入流程
+
+为了让后续交易所接入低风险、可复用，建议固定按以下步骤推进：
+
+1. **先写 venue reality notes（现实约束说明）**  
+   明确该 venue 的市场类型（CEX/DEX）、认证方式、symbol 规则、rate limit、可用接口与已知限制。
+2. **在 registry 新增 `VenueDefinition`**  
+   位置：`app/venues/registry.py`。先完整填写元信息和 capability 布尔位，再决定是否启用。
+3. **实现并接线 market adapter**  
+   位置：`app/exchanges/`。继承 `BaseMarketAdapter`（`app/exchanges/base.py`），实现 `fetch_snapshots(...)` 与 symbol 归一化。
+4. **补 execution adapter scaffold 条目**  
+   位置：`app/execution_adapters/`。继承 `BaseExecutionAdapter`；在未准备 live 之前保持 paper/mock 路径。
+5. **补 symbol mapping 与 focused tests**  
+   优先验证：symbol 正规化、capability endpoint 输出、adapter deterministic 行为、无网络依赖。
+6. **最后才考虑 live execution support**  
+   仅在风控、审计、回放验证、权限隔离都通过后，再把 `live_supported_now` 从 `false` 升级。
+
+当前仓库仍保持 research/paper-first：
+
+- `live_supported_now=false`（所有 venue）
+- 不要求 exchange credentials
+- 不引入 live 下单逻辑
+
 ## Architecture Overview
 
 项目当前大致分为以下几层：
