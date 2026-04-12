@@ -51,6 +51,7 @@ from app.services.telegram_notifier import TelegramNotifier, TelegramNotifierCon
 from app.services.alert_memory import AlertCandidate, AlertMemoryService
 from app.services.final_opportunities import FinalOpportunitiesFilters, list_final_opportunities
 from app.services.execution_preparation import build_execution_candidates, to_paper_execution_records
+from app.services.execution_intents import candidates_to_order_intents
 from app.services.research_summary import ResearchSummaryService
 from app.venues.registry import list_venue_definitions
 
@@ -575,6 +576,38 @@ async def get_execution_candidates(
         only_actionable=_coerce_bool(only_actionable, default=False),
         include_test=_coerce_bool(include_test, default=False),
     )
+
+
+@app.post("/api/v1/execution/order-intent-preview")
+async def get_order_intent_preview(
+    payload: dict[str, list[str]] | None = Body(default=None),
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    route_keys_raw: list[str] = []
+    if payload is not None and isinstance(payload.get("route_keys"), list):
+        route_keys_raw = [str(item) for item in payload.get("route_keys", [])]
+    route_key_set = {item for item in route_keys_raw if item}
+
+    candidates = list_execution_candidates(
+        symbols=symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        include_test=include_test,
+    )
+    selected_candidates = candidates
+    if route_key_set:
+        selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
+
+    intents = candidates_to_order_intents([ExecutionCandidate.model_validate(item) for item in selected_candidates])
+    return {
+        "candidate_count": len(candidates),
+        "selected_candidate_count": len(selected_candidates),
+        "intent_count": len(intents),
+        "items": [item.model_dump() for item in intents],
+    }
 
 
 @app.post("/api/v1/paper-executions/from-candidates")

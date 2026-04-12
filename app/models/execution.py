@@ -72,3 +72,94 @@ class PaperExecutionRecord(BaseModel):
     outcome_status: Literal["unknown", "flat", "positive", "negative"] = "unknown"
     outcome_updated_at_ms: int
     raw_execution_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class OrderIntent(BaseModel):
+    venue_id: str
+    symbol: str
+    side: Literal["buy", "sell"]
+    order_type: Literal["market", "limit"] | None = None
+    quantity: float | None = None
+    price: float | None = None
+    time_in_force: Literal["gtc", "ioc", "fok", "post_only"] | None = None
+    reduce_only: bool | None = None
+    client_order_id: str | None = None
+    route_key: str | None = None
+    target_position_pct: float | None = None
+    target_notional_usd: float | None = None
+    max_slippage_bps: float | None = None
+    max_order_age_ms: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    is_live: bool = False
+
+
+class CancelIntent(BaseModel):
+    venue_id: str
+    order_id: str | None = None
+    client_order_id: str | None = None
+    symbol: str | None = None
+    route_key: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    is_live: bool = False
+
+
+class OrderStatusSnapshot(BaseModel):
+    venue_id: str
+    order_id: str | None = None
+    client_order_id: str | None = None
+    symbol: str | None = None
+    side: Literal["buy", "sell"] | None = None
+    order_type: Literal["market", "limit"] | None = None
+    status: Literal["accepted", "open", "partially_filled", "filled", "cancelled", "rejected", "unknown"] = "unknown"
+    quantity: float | None = None
+    filled_qty: float | None = None
+    remaining_qty: float | None = None
+    average_fill_price: float | None = None
+    reduce_only: bool | None = None
+    time_in_force: Literal["gtc", "ioc", "fok", "post_only"] | None = None
+    route_key: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    is_live: bool = False
+
+
+class PositionSnapshot(BaseModel):
+    venue_id: str
+    symbol: str
+    size: float | None = None
+    entry_price: float | None = None
+    mark_price: float | None = None
+    unrealized_pnl: float | None = None
+    leverage: float | None = None
+    route_key: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    is_live: bool = False
+
+
+class BalanceSnapshot(BaseModel):
+    venue_id: str
+    asset: str
+    free: float | None = None
+    locked: float | None = None
+    equity: float | None = None
+    available: float | None = None
+    route_key: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    is_live: bool = False
+
+
+class AdapterExecutionResult(BaseModel):
+    venue_id: str
+    operation: Literal["place_order", "cancel_order", "get_order_status", "get_position", "get_balance"]
+    accepted: bool
+    message: str | None = None
+    order_status: OrderStatusSnapshot | None = None
+    position: PositionSnapshot | None = None
+    balance: BalanceSnapshot | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    is_live: bool = False
