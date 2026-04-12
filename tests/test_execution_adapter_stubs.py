@@ -33,7 +33,13 @@ async def _translate_with(adapter, *, venue: str, order_type: str = "limit", qua
     return await adapter.place_order(intent)
 
 
-def _record(*, symbol: str, long_exchange: str, short_exchange: str) -> ObservationRecord:
+def _record(
+    *,
+    symbol: str,
+    long_exchange: str,
+    short_exchange: str,
+    target_notional_usd: float | None = 1200.0,
+) -> ObservationRecord:
     route = f"{symbol}:{long_exchange}->{short_exchange}"
     return ObservationRecord(
         observed_at_ms=1_700_000_000_000,
@@ -61,6 +67,7 @@ def _record(*, symbol: str, long_exchange: str, short_exchange: str) -> Observat
             "risk_adjusted_edge_bps": 22.0,
             "replay_net_after_cost_bps": 16.0,
             "estimated_net_edge_bps": 14.0,
+            "target_notional_usd": target_notional_usd,
             "long_price": 100.0,
             "short_price": 101.0,
             "replay_passes_min_trade_gate": True,
@@ -165,8 +172,14 @@ def test_venue_request_preview_endpoint_translates_intents_by_venue(tmp_path, mo
     assert payload["intent_count"] == 4
     assert payload["translation_count"] == 4
     assert payload["is_live"] is False
+    assert payload["resolved_intent_count"] == 4
+    assert payload["unresolved_intent_count"] == 0
     translated_venues = {item["translation"]["venue_id"] for item in payload["items"]}
     assert translated_venues == {"binance", "okx", "hyperliquid", "lighter"}
+    assert all(
+        "quantity_required" not in item["translation"]["translation"]["preview"]["validation_errors"]
+        for item in payload["items"]
+    )
 
 
 def test_venue_request_preview_endpoint_is_network_free(tmp_path, monkeypatch) -> None:

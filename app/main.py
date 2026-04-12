@@ -559,6 +559,36 @@ def list_paper_executions(
     return [item.model_dump() for item in records]
 
 
+def _build_quantity_resolution_summary(intents: list[object]) -> dict[str, object]:
+    unresolved_legs: list[dict[str, str]] = []
+    statuses: set[str] = set()
+    sources: set[str] = set()
+    warning_set: set[str] = set()
+    for intent in intents:
+        metadata = getattr(intent, "metadata", {}) or {}
+        statuses.add(str(metadata.get("quantity_resolution_status") or "unavailable"))
+        sources.add(str(metadata.get("quantity_resolution_source") or "unavailable"))
+        for warning in metadata.get("quantity_resolution_warnings", []) or []:
+            warning_set.add(str(warning))
+        if getattr(intent, "quantity", None) is None:
+            unresolved_legs.append(
+                {
+                    "route_key": str(getattr(intent, "route_key", "") or ""),
+                    "venue_id": str(getattr(intent, "venue_id", "") or ""),
+                    "leg": str(metadata.get("leg") or "unknown"),
+                }
+            )
+
+    return {
+        "quantity_resolution_statuses": sorted(statuses),
+        "quantity_resolution_sources": sorted(sources),
+        "quantity_resolution_warnings": sorted(warning_set),
+        "unresolved_legs": unresolved_legs,
+        "resolved_intent_count": len(intents) - len(unresolved_legs),
+        "unresolved_intent_count": len(unresolved_legs),
+    }
+
+
 @app.get("/api/v1/execution/candidates")
 async def get_execution_candidates(
     symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
@@ -604,10 +634,14 @@ async def get_order_intent_preview(
         selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
 
     intents = candidates_to_order_intents([ExecutionCandidate.model_validate(item) for item in selected_candidates])
+    quantity_resolution_summary = _build_quantity_resolution_summary(intents)
     return {
         "candidate_count": len(candidates),
         "selected_candidate_count": len(selected_candidates),
         "intent_count": len(intents),
+        "preview_only": True,
+        "is_live": False,
+        **quantity_resolution_summary,
         "items": [item.model_dump() for item in intents],
     }
 
@@ -656,13 +690,16 @@ async def get_venue_request_preview(
             }
         )
 
+    quantity_resolution_summary = _build_quantity_resolution_summary(selected_intents)
     return {
         "candidate_count": len(candidates),
         "selected_candidate_count": len(selected_candidates),
         "intent_count": len(intents),
         "selected_intent_count": len(selected_intents),
         "translation_count": len(results),
+        "preview_only": True,
         "is_live": False,
+        **quantity_resolution_summary,
         "items": results,
     }
 
