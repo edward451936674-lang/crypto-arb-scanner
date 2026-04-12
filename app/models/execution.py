@@ -35,6 +35,19 @@ class ExecutionCandidate(BaseModel):
     is_test: bool = False
 
 
+class QuantityResolutionResult(BaseModel):
+    resolved_quantity_long: float | None = None
+    resolved_quantity_short: float | None = None
+    quantity_resolution_status: Literal["resolved", "partial", "unavailable"] = "unavailable"
+    quantity_resolution_source: Literal[
+        "target_notional_and_reference_price",
+        "target_position_pct_only",
+        "unavailable",
+    ] = "unavailable"
+    warnings: list[str] = Field(default_factory=list)
+    notes: str | None = None
+
+
 class PaperExecutionRecord(BaseModel):
     id: int | None = None
     created_at_ms: int

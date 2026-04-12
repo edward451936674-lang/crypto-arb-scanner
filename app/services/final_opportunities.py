@@ -43,6 +43,15 @@ def _coerce_float(value: object) -> float | None:
         return None
 
 
+def _coerce_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_raw_opportunity_json(raw_value: object) -> dict[str, object]:
     if isinstance(raw_value, dict):
         return raw_value
@@ -182,6 +191,9 @@ def list_final_opportunities(
                         raw_keys=["final_position_pct"],
                     )
                 ),
+                "target_notional_usd": _coerce_float(raw.get("target_notional_usd")),
+                "max_slippage_bps": _coerce_float(raw.get("max_slippage_bps")),
+                "max_order_age_ms": _coerce_int(raw.get("max_order_age_ms")),
                 "why_not_tradable": _value_from_record_then_raw(
                     record,
                     raw,
