@@ -20,5 +20,8 @@ ADAPTER_REGISTRY: dict[str, type[BaseExecutionAdapter]] = {
 
 
 def get_execution_adapter(venue_id: str) -> BaseExecutionAdapter:
-    adapter_cls = ADAPTER_REGISTRY.get(str(venue_id).lower(), PaperExecutionAdapter)
+    normalized_venue_id = str(venue_id).lower()
+    adapter_cls = ADAPTER_REGISTRY.get(normalized_venue_id)
+    if adapter_cls is None:
+        raise ValueError(f"unsupported_execution_venue:{normalized_venue_id}")
     return adapter_cls()
