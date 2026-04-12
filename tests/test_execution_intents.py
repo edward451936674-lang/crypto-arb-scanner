@@ -90,8 +90,26 @@ def test_candidate_to_order_intents_translation_preserves_route_and_venues() -> 
     assert short_intent.venue_id == "okx"
     assert long_intent.side == "buy"
     assert short_intent.side == "sell"
+    assert long_intent.quantity is None
+    assert short_intent.quantity is None
     assert long_intent.target_position_pct == 0.05
     assert short_intent.target_notional_usd == 5000.0
+
+
+def test_candidate_to_order_intents_does_not_use_target_position_pct_as_quantity() -> None:
+    candidate = ExecutionCandidate(
+        symbol="ETH",
+        long_exchange="binance",
+        short_exchange="okx",
+        route_key="ETH:binance->okx",
+        generated_at_ms=1,
+        target_position_pct=0.25,
+        target_notional_usd=1000.0,
+    )
+    intents = candidate_to_order_intents(candidate)
+    assert all(item.quantity is None for item in intents)
+    assert all(item.target_position_pct == 0.25 for item in intents)
+    assert all(item.target_notional_usd == 1000.0 for item in intents)
 
 
 def test_order_intent_preview_endpoint_returns_translated_intents(tmp_path, monkeypatch) -> None:
@@ -100,8 +118,7 @@ def test_order_intent_preview_endpoint_returns_translated_intents(tmp_path, monk
     monkeypatch.setattr("app.main.observation_store", store)
 
     client = TestClient(app)
-    response = client.request(
-        "GET",
+    response = client.post(
         "/api/v1/execution/order-intent-preview",
         json={"route_keys": ["BTC:binance->okx"]},
         params={"top_n": 5, "include_test": False},
@@ -114,6 +131,7 @@ def test_order_intent_preview_endpoint_returns_translated_intents(tmp_path, monk
     assert payload["intent_count"] == 2
     assert {item["side"] for item in payload["items"]} == {"buy", "sell"}
     assert {item["venue_id"] for item in payload["items"]} == {"binance", "okx"}
+    assert all(item["quantity"] is None for item in payload["items"])
 
 
 def test_order_intent_preview_endpoint_does_not_require_network_calls(tmp_path, monkeypatch) -> None:
@@ -127,7 +145,7 @@ def test_order_intent_preview_endpoint_does_not_require_network_calls(tmp_path, 
     monkeypatch.setattr("app.services.market_data.MarketDataService.fetch_snapshots", fail_fetch_snapshots)
     client = TestClient(app)
 
-    response = client.get("/api/v1/execution/order-intent-preview")
+    response = client.post("/api/v1/execution/order-intent-preview")
 
     assert response.status_code == 200
     assert response.json()["intent_count"] == 2

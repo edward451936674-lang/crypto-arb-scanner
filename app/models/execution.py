@@ -79,7 +79,7 @@ class OrderIntent(BaseModel):
     symbol: str
     side: Literal["buy", "sell"]
     order_type: Literal["market", "limit"] | None = None
-    quantity: float
+    quantity: float | None = None
     price: float | None = None
     time_in_force: Literal["gtc", "ioc", "fok", "post_only"] | None = None
     reduce_only: bool | None = None

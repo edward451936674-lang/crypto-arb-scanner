@@ -4,8 +4,6 @@ from app.models.execution import ExecutionCandidate, OrderIntent
 
 
 def candidate_to_order_intents(candidate: ExecutionCandidate) -> list[OrderIntent]:
-    target_qty = candidate.target_position_pct
-
     base_notes = (
         "paper_only_translation_v1"
         if candidate.is_executable_now
@@ -17,7 +15,7 @@ def candidate_to_order_intents(candidate: ExecutionCandidate) -> list[OrderInten
         symbol=candidate.symbol,
         side="buy",
         order_type="market",
-        quantity=float(target_qty or 0.0),
+        quantity=None,
         price=candidate.entry_reference_price_long,
         time_in_force=None,
         reduce_only=False,
@@ -42,7 +40,7 @@ def candidate_to_order_intents(candidate: ExecutionCandidate) -> list[OrderInten
         symbol=candidate.symbol,
         side="sell",
         order_type="market",
-        quantity=float(target_qty or 0.0),
+        quantity=None,
         price=candidate.entry_reference_price_short,
         time_in_force=None,
         reduce_only=False,

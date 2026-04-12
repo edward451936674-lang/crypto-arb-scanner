@@ -578,7 +578,7 @@ async def get_execution_candidates(
     )
 
 
-@app.get("/api/v1/execution/order-intent-preview")
+@app.post("/api/v1/execution/order-intent-preview")
 async def get_order_intent_preview(
     payload: dict[str, list[str]] | None = Body(default=None),
     symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),

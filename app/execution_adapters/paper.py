@@ -17,8 +17,9 @@ class PaperExecutionAdapter(BaseExecutionAdapter):
     venue_id = "paper"
 
     def _deterministic_order_id(self, *, intent: OrderIntent) -> str:
+        quantity_key = "na" if intent.quantity is None else f"{intent.quantity:.8f}"
         payload = (
-            f"{intent.venue_id}|{intent.symbol}|{intent.side}|{intent.quantity:.8f}|"
+            f"{intent.venue_id}|{intent.symbol}|{intent.side}|{quantity_key}|"
             f"{intent.price if intent.price is not None else 'mkt'}|{intent.client_order_id or ''}"
         )
         digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
