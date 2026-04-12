@@ -421,11 +421,28 @@ async def meta() -> dict[str, object]:
 
 @app.get("/api/v1/execution/venue-capabilities")
 async def get_execution_venue_capabilities() -> dict[str, object]:
-    venues = [item.model_dump(mode="json") for item in list_venue_definitions()]
+    venue_definitions = list_venue_definitions()
+    venues = [item.model_dump(mode="json") for item in venue_definitions]
+    classic_api_style_venues = [
+        item.venue_id.value
+        for item in venue_definitions
+        if item.capabilities.supports_rest_trading_api and not item.capabilities.supports_signed_actions
+    ]
+    signed_action_style_venues = [
+        item.venue_id.value for item in venue_definitions if item.capabilities.supports_signed_actions
+    ]
+    sdk_heavy_venues = [
+        item.venue_id.value for item in venue_definitions if item.capabilities.supports_sdk_recommended
+    ]
     return {
         "live_execution_enabled": False,
         "live_execution_status": "not_enabled_in_this_repo",
         "message": "Live execution adapters are intentionally not implemented yet.",
+        "execution_styles": {
+            "classic_api_style_venues": classic_api_style_venues,
+            "signed_action_style_venues": signed_action_style_venues,
+            "sdk_recommended_venues": sdk_heavy_venues,
+        },
         "venues": venues,
     }
 

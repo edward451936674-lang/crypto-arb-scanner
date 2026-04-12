@@ -120,6 +120,16 @@
 - 不要求 exchange credentials
 - 不引入 live 下单逻辑
 
+### Why reality check before live adapters
+
+在开始任何 live execution adapter 之前，仓库会先维护一层「venue reality check」：
+
+- 先确认 venue 是 **CEX 私有 API 风格**（例如 Binance / OKX）还是 **signed-action / wallet-signature 风格**（例如 Hyperliquid / Lighter）。
+- 用统一 metadata 标出：是否 REST 私有交易、是否依赖 signed actions、是否更适合 SDK 驱动。
+- 通过只读接口暴露能力分组，先把架构边界对齐，再进入真实下单实现。
+
+这能避免后续把不同执行模型硬塞进同一套 live adapter 抽象，并保持当前仓库继续 non-live / paper-first。
+
 ## Architecture Overview
 
 项目当前大致分为以下几层：
