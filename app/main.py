@@ -578,17 +578,18 @@ async def get_execution_candidates(
     )
 
 
-@app.post("/api/v1/execution/order-intent-preview")
+@app.get("/api/v1/execution/order-intent-preview")
 async def get_order_intent_preview(
-    payload: dict[str, list[str]] | None = Body(default=None),
     symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    route_keys: list[str] | None = Query(
+        default=None,
+        description="Repeat route_keys to filter preview to specific execution routes",
+    ),
     top_n: int = Query(default=10, ge=1, le=500),
     only_actionable: bool = Query(default=False),
     include_test: bool = Query(default=False),
 ) -> dict[str, object]:
-    route_keys_raw: list[str] = []
-    if payload is not None and isinstance(payload.get("route_keys"), list):
-        route_keys_raw = [str(item) for item in payload.get("route_keys", [])]
+    route_keys_raw = [str(item) for item in (route_keys or [])]
     route_key_set = {item for item in route_keys_raw if item}
 
     candidates = list_execution_candidates(

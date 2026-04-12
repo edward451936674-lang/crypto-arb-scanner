@@ -118,10 +118,9 @@ def test_order_intent_preview_endpoint_returns_translated_intents(tmp_path, monk
     monkeypatch.setattr("app.main.observation_store", store)
 
     client = TestClient(app)
-    response = client.post(
+    response = client.get(
         "/api/v1/execution/order-intent-preview",
-        json={"route_keys": ["BTC:binance->okx"]},
-        params={"top_n": 5, "include_test": False},
+        params={"route_keys": ["BTC:binance->okx"], "top_n": 5, "include_test": False},
     )
 
     assert response.status_code == 200
@@ -145,7 +144,57 @@ def test_order_intent_preview_endpoint_does_not_require_network_calls(tmp_path, 
     monkeypatch.setattr("app.services.market_data.MarketDataService.fetch_snapshots", fail_fetch_snapshots)
     client = TestClient(app)
 
-    response = client.post("/api/v1/execution/order-intent-preview")
+    response = client.get("/api/v1/execution/order-intent-preview")
 
     assert response.status_code == 200
     assert response.json()["intent_count"] == 2
+
+
+def test_order_intent_preview_endpoint_filters_by_query_route_keys(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="okx"),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx"),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+
+    client = TestClient(app)
+    response = client.get(
+        "/api/v1/execution/order-intent-preview",
+        params=[("route_keys", "ETH:binance->okx"), ("top_n", "5"), ("include_test", "false")],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["candidate_count"] == 2
+    assert payload["selected_candidate_count"] == 1
+    assert payload["intent_count"] == 2
+    assert {item["route_key"] for item in payload["items"]} == {"ETH:binance->okx"}
+
+
+def test_observations_schema_is_unchanged_for_execution_intent_workflow(tmp_path) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    with store._connect() as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(observations)").fetchall()]
+
+    assert columns == [
+        "id",
+        "observed_at_ms",
+        "symbol",
+        "cluster_id",
+        "long_exchange",
+        "short_exchange",
+        "estimated_net_edge_bps",
+        "opportunity_grade",
+        "execution_mode",
+        "final_position_pct",
+        "why_not_tradable",
+        "replay_net_after_cost_bps",
+        "replay_confidence_label",
+        "replay_passes_min_trade_gate",
+        "risk_flags",
+        "replay_summary",
+        "raw_opportunity_json",
+    ]
