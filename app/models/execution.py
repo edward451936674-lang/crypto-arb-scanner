@@ -204,7 +204,7 @@ class AdapterExecutionResult(BaseModel):
     is_live: bool = False
 
 
-ExecutionPreflightStatus = Literal["ready", "blocked", "partial"]
+ExecutionPreflightStatus = Literal["ready", "blocked"]
 ExecutionPreflightBlocker = Literal[
     "long_quantity_unresolved",
     "short_quantity_unresolved",

@@ -732,14 +732,12 @@ async def get_execution_preflight_preview(
     )
     ready_bundle_count = sum(1 for item in bundles if item.bundle_status == "ready")
     blocked_bundle_count = sum(1 for item in bundles if item.bundle_status == "blocked")
-    partial_bundle_count = sum(1 for item in bundles if item.bundle_status == "partial")
 
     return {
         "candidate_count": len(candidates),
         "bundle_count": len(bundles),
         "ready_bundle_count": ready_bundle_count,
         "blocked_bundle_count": blocked_bundle_count,
-        "partial_bundle_count": partial_bundle_count,
         "preview_only": True,
         "is_live": False,
         "items": [item.model_dump() for item in bundles],
