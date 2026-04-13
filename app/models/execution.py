@@ -202,3 +202,41 @@ class AdapterExecutionResult(BaseModel):
     notes: str | None = None
     translation: VenueTranslationResult | None = None
     is_live: bool = False
+
+
+ExecutionPreflightStatus = Literal["ready", "blocked", "partial"]
+ExecutionPreflightBlocker = Literal[
+    "long_quantity_unresolved",
+    "short_quantity_unresolved",
+    "long_validation_error",
+    "short_validation_error",
+    "unsupported_venue",
+    "missing_route_key",
+]
+
+
+class ExecutionLegPreflight(BaseModel):
+    venue_id: str
+    side: Literal["buy", "sell"]
+    symbol: str
+    route_key: str
+    quantity: float | None = None
+    quantity_resolution_status: Literal["resolved", "partial", "unavailable"] = "unavailable"
+    request_preview_available: bool = False
+    validation_errors: list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
+    supported_venue: bool = False
+    is_ready: bool = False
+
+
+class ExecutionBundlePreflight(BaseModel):
+    route_key: str
+    symbol: str
+    long_leg: ExecutionLegPreflight
+    short_leg: ExecutionLegPreflight
+    bundle_status: ExecutionPreflightStatus = "blocked"
+    blockers: list[ExecutionPreflightBlocker] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    is_executable_bundle: bool = False
+    preview_only: bool = True
+    is_live: bool = False

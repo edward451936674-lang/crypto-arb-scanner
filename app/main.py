@@ -52,6 +52,7 @@ from app.services.alert_memory import AlertCandidate, AlertMemoryService
 from app.services.final_opportunities import FinalOpportunitiesFilters, list_final_opportunities
 from app.services.execution_preparation import build_execution_candidates, to_paper_execution_records
 from app.services.execution_intents import candidates_to_order_intents
+from app.services.execution_preflight import evaluate_execution_preflight_bundles
 from app.execution_adapters.registry import get_execution_adapter
 from app.services.research_summary import ResearchSummaryService
 from app.venues.registry import list_venue_definitions
@@ -701,6 +702,47 @@ async def get_venue_request_preview(
         "is_live": False,
         **quantity_resolution_summary,
         "items": results,
+    }
+
+
+@app.get("/api/v1/execution/preflight-preview")
+async def get_execution_preflight_preview(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    route_keys: list[str] | None = Query(
+        default=None,
+        description="Repeat route_keys to filter preview to specific execution routes",
+    ),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    route_key_set = {str(item) for item in (route_keys or []) if str(item)}
+    candidates = list_execution_candidates(
+        symbols=symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        include_test=include_test,
+    )
+    selected_candidates = candidates
+    if route_key_set:
+        selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
+
+    bundles = await evaluate_execution_preflight_bundles(
+        [ExecutionCandidate.model_validate(item) for item in selected_candidates]
+    )
+    ready_bundle_count = sum(1 for item in bundles if item.bundle_status == "ready")
+    blocked_bundle_count = sum(1 for item in bundles if item.bundle_status == "blocked")
+    partial_bundle_count = sum(1 for item in bundles if item.bundle_status == "partial")
+
+    return {
+        "candidate_count": len(candidates),
+        "bundle_count": len(bundles),
+        "ready_bundle_count": ready_bundle_count,
+        "blocked_bundle_count": blocked_bundle_count,
+        "partial_bundle_count": partial_bundle_count,
+        "preview_only": True,
+        "is_live": False,
+        "items": [item.model_dump() for item in bundles],
     }
 
 
