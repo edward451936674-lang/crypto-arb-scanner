@@ -91,12 +91,7 @@ async def evaluate_execution_bundle_preflight(candidate: ExecutionCandidate) -> 
     blockers = _build_blockers(long_leg=long_leg, short_leg=short_leg, route_key=candidate.route_key)
     warnings = sorted({*long_leg.validation_warnings, *short_leg.validation_warnings})
 
-    if blockers:
-        bundle_status = "blocked"
-    elif long_leg.is_ready and short_leg.is_ready:
-        bundle_status = "ready"
-    else:
-        bundle_status = "partial"
+    bundle_status = "ready" if not blockers and long_leg.is_ready and short_leg.is_ready else "blocked"
 
     return ExecutionBundlePreflight(
         route_key=candidate.route_key,

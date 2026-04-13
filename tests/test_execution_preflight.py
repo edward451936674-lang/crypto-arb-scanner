@@ -151,7 +151,8 @@ def test_preflight_preview_endpoint_summary_counts_work(tmp_path, monkeypatch) -
     assert payload["bundle_count"] == 3
     assert payload["ready_bundle_count"] == 1
     assert payload["blocked_bundle_count"] == 2
-    assert payload["partial_bundle_count"] == 0
+    assert "partial_bundle_count" not in payload
+    assert {item["bundle_status"] for item in payload["items"]} <= {"ready", "blocked"}
     assert payload["preview_only"] is True
     assert payload["is_live"] is False
 
