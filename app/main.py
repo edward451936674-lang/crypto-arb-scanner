@@ -787,6 +787,7 @@ async def post_execution_dry_run_submit(
     attempts = await simulate_dry_run_execution_attempts(
         [ExecutionCandidate.model_validate(item) for item in selected_candidates]
     )
+    stored_count = observation_store.insert_dry_run_execution_attempts([item.model_dump() for item in attempts])
     accepted_bundle_count = sum(1 for item in attempts if item.bundle_status == "accepted")
     blocked_bundle_count = sum(1 for item in attempts if item.bundle_status == "blocked")
     failed_bundle_count = sum(1 for item in attempts if item.bundle_status == "failed")
@@ -797,9 +798,36 @@ async def post_execution_dry_run_submit(
         "accepted_bundle_count": accepted_bundle_count,
         "blocked_bundle_count": blocked_bundle_count,
         "failed_bundle_count": failed_bundle_count,
+        "stored_count": stored_count,
         "preview_only": True,
         "is_live": False,
         "items": [item.model_dump() for item in attempts],
+    }
+
+
+@app.get("/api/v1/execution/dry-run-attempts")
+async def get_execution_dry_run_attempts(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    route_keys: list[str] | None = Query(
+        default=None,
+        description="Repeat route_keys to filter to specific execution routes",
+    ),
+    bundle_status: Literal["accepted", "blocked", "failed"] | None = Query(default=None),
+    top_n: int = Query(default=100, ge=1, le=500),
+) -> dict[str, object]:
+    symbol_filters = parse_symbols(symbols) if symbols else None
+    route_key_filters = [str(item) for item in (route_keys or []) if str(item)]
+    items = observation_store.latest_dry_run_execution_attempts(
+        limit=top_n,
+        symbols=symbol_filters,
+        route_keys=route_key_filters,
+        bundle_status=bundle_status,
+    )
+    return {
+        "count": len(items),
+        "preview_only": True,
+        "is_live": False,
+        "items": items,
     }
 
 

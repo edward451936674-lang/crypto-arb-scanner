@@ -214,6 +214,7 @@ def test_dry_run_submit_endpoint_summary_counts_work(tmp_path, monkeypatch) -> N
     assert payload["accepted_bundle_count"] == 1
     assert payload["blocked_bundle_count"] == 1
     assert payload["failed_bundle_count"] == 1
+    assert payload["stored_count"] == 3
     assert payload["preview_only"] is True
     assert payload["is_live"] is False
     accepted_attempt = next(item for item in payload["items"] if item["bundle_status"] == "accepted")
@@ -221,6 +222,100 @@ def test_dry_run_submit_endpoint_summary_counts_work(tmp_path, monkeypatch) -> N
     assert accepted_attempt["short_leg"]["submit_sequence"] == 2
     assert accepted_attempt["long_leg"]["supported_venue"] is True
     assert accepted_attempt["short_leg"]["supported_venue"] is True
+    stored_attempts = store.latest_dry_run_execution_attempts(limit=10)
+    assert len(stored_attempts) == 3
+    assert {item["bundle_status"] for item in stored_attempts} == {"accepted", "blocked", "failed"}
+
+
+def test_dry_run_attempts_endpoint_returns_newest_first_and_filters(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many(
+        [
+            _record(symbol="BTC", long_exchange="binance", short_exchange="hyperliquid", route_key="BTC:binance->hyperliquid"),
+            _record(symbol="ETH", long_exchange="binance", short_exchange="okx", route_key="ETH:binance->okx"),
+            _record(symbol="SOL", long_exchange="binance", short_exchange="okx", route_key="SOL:binance->okx", short_price=None),
+        ]
+    )
+    monkeypatch.setattr("app.main.observation_store", store)
+
+    from app.execution_adapters.registry import get_execution_adapter as registry_get_execution_adapter
+
+    def _patched_get_execution_adapter(venue_id: str):
+        if venue_id == "okx":
+            return _RejectingOkxAdapter()
+        return registry_get_execution_adapter(venue_id)
+
+    monkeypatch.setattr("app.services.execution_dry_run_submit.get_execution_adapter", _patched_get_execution_adapter)
+
+    client = TestClient(app)
+    submit_response = client.post("/api/v1/execution/dry-run-submit", json={"top_n": 10, "include_test": False})
+    assert submit_response.status_code == 200
+
+    response = client.get("/api/v1/execution/dry-run-attempts", params={"top_n": 2})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 2
+    assert payload["preview_only"] is True
+    assert payload["is_live"] is False
+    assert payload["items"][0]["created_at_ms"] >= payload["items"][1]["created_at_ms"]
+
+    accepted = client.get("/api/v1/execution/dry-run-attempts", params={"bundle_status": "accepted", "top_n": 10}).json()
+    assert accepted["count"] == 1
+    assert accepted["items"][0]["bundle_status"] == "accepted"
+
+    sol = client.get("/api/v1/execution/dry-run-attempts", params={"symbols": "SOL", "top_n": 10}).json()
+    assert sol["count"] == 1
+    assert sol["items"][0]["symbol"] == "SOL"
+
+    route = client.get(
+        "/api/v1/execution/dry-run-attempts",
+        params=[("route_keys", "ETH:binance->okx"), ("top_n", "10")],
+    ).json()
+    assert route["count"] == 1
+    assert route["items"][0]["route_key"] == "ETH:binance->okx"
+    assert route["items"][0]["long_leg"]["submit_sequence"] == 1
+    assert route["items"][0]["short_leg"]["submit_sequence"] == 2
+
+
+def test_dry_run_attempts_schema_exists_and_observations_schema_unchanged(tmp_path) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    with store._connect() as conn:
+        observation_columns = [row[1] for row in conn.execute("PRAGMA table_info(observations)").fetchall()]
+        dry_run_columns = [row[1] for row in conn.execute("PRAGMA table_info(dry_run_execution_attempts)").fetchall()]
+
+    assert observation_columns == [
+        "id",
+        "observed_at_ms",
+        "symbol",
+        "cluster_id",
+        "long_exchange",
+        "short_exchange",
+        "estimated_net_edge_bps",
+        "opportunity_grade",
+        "execution_mode",
+        "final_position_pct",
+        "why_not_tradable",
+        "replay_net_after_cost_bps",
+        "replay_confidence_label",
+        "replay_passes_min_trade_gate",
+        "risk_flags",
+        "replay_summary",
+        "raw_opportunity_json",
+    ]
+    assert dry_run_columns == [
+        "id",
+        "created_at_ms",
+        "attempt_id",
+        "route_key",
+        "symbol",
+        "bundle_status",
+        "failure_reasons_json",
+        "submitted_leg_count",
+        "accepted_leg_count",
+        "long_leg_json",
+        "short_leg_json",
+        "raw_attempt_json",
+    ]
 
 
 def test_dry_run_submit_endpoint_has_no_network_calls(tmp_path, monkeypatch) -> None:
