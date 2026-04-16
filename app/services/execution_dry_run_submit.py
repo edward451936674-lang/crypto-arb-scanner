@@ -13,6 +13,11 @@ from app.models.execution import (
 from app.services.execution_intents import candidate_to_order_intents
 from app.services.execution_preflight import evaluate_execution_bundle_preflight
 
+_SUBMIT_SEQUENCE_BY_SIDE: dict[str, tuple[int, int, str]] = {
+    "buy": (0, 1, "first"),
+    "sell": (1, 2, "second"),
+}
+
 
 def _map_preflight_blockers_to_failure_reasons(blockers: list[str]) -> list[DryRunExecutionFailureReason]:
     reasons: list[DryRunExecutionFailureReason] = ["preflight_blocked"]
@@ -29,16 +34,21 @@ def _map_preflight_blockers_to_failure_reasons(blockers: list[str]) -> list[DryR
 
 
 def _leg_attempt_from_preflight(leg: ExecutionLegPreflight) -> DryRunExecutionLegAttempt:
+    leg_index, submit_sequence, submit_order = _SUBMIT_SEQUENCE_BY_SIDE[leg.side]
     return DryRunExecutionLegAttempt(
         venue_id=leg.venue_id,
         side=leg.side,
         symbol=leg.symbol,
         route_key=leg.route_key,
+        leg_index=leg_index,
+        submit_sequence=submit_sequence,
+        submit_order=submit_order,
         quantity=leg.quantity,
         request_preview=None,
         submit_status="skipped",
         submit_message="skipped_due_to_preflight_blocked",
         accepted=False,
+        supported_venue=leg.supported_venue,
         validation_errors=list(leg.validation_errors),
         validation_warnings=list(leg.validation_warnings),
     )
@@ -75,6 +85,7 @@ async def simulate_dry_run_execution_attempt(candidate: ExecutionCandidate) -> D
     leg_attempts: dict[str, DryRunExecutionLegAttempt] = {}
 
     for side in ("buy", "sell"):
+        leg_index, submit_sequence, submit_order = _SUBMIT_SEQUENCE_BY_SIDE[side]
         intent = intents_by_side[side]
         try:
             adapter = get_execution_adapter(intent.venue_id)
@@ -84,11 +95,15 @@ async def simulate_dry_run_execution_attempt(candidate: ExecutionCandidate) -> D
                 side=intent.side,
                 symbol=intent.symbol,
                 route_key=str(intent.route_key or ""),
+                leg_index=leg_index,
+                submit_sequence=submit_sequence,
+                submit_order=submit_order,
                 quantity=intent.quantity,
                 request_preview=None,
                 submit_status="rejected",
                 submit_message="unsupported_venue",
                 accepted=False,
+                supported_venue=False,
                 validation_errors=["unsupported_venue"],
                 validation_warnings=[],
             )
@@ -104,11 +119,15 @@ async def simulate_dry_run_execution_attempt(candidate: ExecutionCandidate) -> D
             side=intent.side,
             symbol=intent.symbol,
             route_key=str(intent.route_key or ""),
+            leg_index=leg_index,
+            submit_sequence=submit_sequence,
+            submit_order=submit_order,
             quantity=intent.quantity,
             request_preview=preview,
             submit_status="accepted" if submit_result.accepted else "rejected",
             submit_message=submit_result.message,
             accepted=submit_result.accepted,
+            supported_venue=True,
             validation_errors=validation_errors,
             validation_warnings=validation_warnings,
         )

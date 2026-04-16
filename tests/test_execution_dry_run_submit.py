@@ -95,6 +95,17 @@ def _record(
     )
 
 
+def _assert_deterministic_sequence(attempt) -> None:
+    assert attempt.long_leg.side == "buy"
+    assert attempt.short_leg.side == "sell"
+    assert attempt.long_leg.leg_index == 0
+    assert attempt.long_leg.submit_sequence == 1
+    assert attempt.long_leg.submit_order == "first"
+    assert attempt.short_leg.leg_index == 1
+    assert attempt.short_leg.submit_sequence == 2
+    assert attempt.short_leg.submit_order == "second"
+
+
 def test_dry_run_submit_ready_bundle_becomes_accepted() -> None:
     candidate = ExecutionCandidate(
         symbol="BTC",
@@ -113,6 +124,9 @@ def test_dry_run_submit_ready_bundle_becomes_accepted() -> None:
     assert attempt.submitted_leg_count == 2
     assert attempt.accepted_leg_count == 2
     assert attempt.failure_reasons == []
+    _assert_deterministic_sequence(attempt)
+    assert attempt.long_leg.supported_venue is True
+    assert attempt.short_leg.supported_venue is True
 
 
 def test_dry_run_submit_preflight_blocked_bundle_is_blocked() -> None:
@@ -133,6 +147,9 @@ def test_dry_run_submit_preflight_blocked_bundle_is_blocked() -> None:
     assert "preflight_blocked" in attempt.failure_reasons
     assert "quantity_unresolved" in attempt.failure_reasons
     assert attempt.submitted_leg_count == 0
+    _assert_deterministic_sequence(attempt)
+    assert attempt.long_leg.supported_venue is True
+    assert attempt.short_leg.supported_venue is True
 
 
 def test_dry_run_submit_one_leg_rejected_becomes_failed(monkeypatch) -> None:
@@ -162,6 +179,9 @@ def test_dry_run_submit_one_leg_rejected_becomes_failed(monkeypatch) -> None:
     assert "short_leg_submit_rejected" in attempt.failure_reasons
     assert "validation_error" in attempt.failure_reasons
     assert attempt.accepted_leg_count == 1
+    _assert_deterministic_sequence(attempt)
+    assert attempt.long_leg.supported_venue is True
+    assert attempt.short_leg.supported_venue is True
 
 
 def test_dry_run_submit_endpoint_summary_counts_work(tmp_path, monkeypatch) -> None:
@@ -196,6 +216,11 @@ def test_dry_run_submit_endpoint_summary_counts_work(tmp_path, monkeypatch) -> N
     assert payload["failed_bundle_count"] == 1
     assert payload["preview_only"] is True
     assert payload["is_live"] is False
+    accepted_attempt = next(item for item in payload["items"] if item["bundle_status"] == "accepted")
+    assert accepted_attempt["long_leg"]["submit_sequence"] == 1
+    assert accepted_attempt["short_leg"]["submit_sequence"] == 2
+    assert accepted_attempt["long_leg"]["supported_venue"] is True
+    assert accepted_attempt["short_leg"]["supported_venue"] is True
 
 
 def test_dry_run_submit_endpoint_has_no_network_calls(tmp_path, monkeypatch) -> None:
