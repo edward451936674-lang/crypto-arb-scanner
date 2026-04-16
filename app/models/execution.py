@@ -205,6 +205,18 @@ class AdapterExecutionResult(BaseModel):
 
 
 ExecutionPreflightStatus = Literal["ready", "blocked"]
+ExecutionPolicyStatus = Literal["allowed", "blocked"]
+ExecutionPolicyBlockReason = Literal[
+    "execution_globally_disabled",
+    "preflight_not_ready",
+    "test_bundle_not_allowed",
+    "long_venue_not_allowed",
+    "short_venue_not_allowed",
+    "symbol_not_allowed",
+    "symbol_explicitly_blocked",
+    "target_notional_missing",
+    "target_notional_exceeds_limit",
+]
 ExecutionPreflightBlocker = Literal[
     "long_quantity_unresolved",
     "short_quantity_unresolved",
@@ -238,6 +250,29 @@ class ExecutionBundlePreflight(BaseModel):
     blockers: list[ExecutionPreflightBlocker] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     is_executable_bundle: bool = False
+    preview_only: bool = True
+    is_live: bool = False
+
+
+class ExecutionPolicyConfigSnapshot(BaseModel):
+    execution_enabled: bool = False
+    allow_test_execution: bool = False
+    allowed_venues: list[str] = Field(default_factory=list)
+    allowed_symbols: list[str] = Field(default_factory=list)
+    blocked_symbols: list[str] = Field(default_factory=list)
+    max_target_notional_usd: float | None = None
+
+
+class ExecutionPolicyDecision(BaseModel):
+    route_key: str
+    symbol: str
+    long_exchange: str
+    short_exchange: str
+    bundle_status_from_preflight: ExecutionPreflightStatus
+    policy_status: ExecutionPolicyStatus = "blocked"
+    allowed: bool = False
+    block_reasons: list[ExecutionPolicyBlockReason] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     preview_only: bool = True
     is_live: bool = False
 

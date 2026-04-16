@@ -53,6 +53,10 @@ from app.services.final_opportunities import FinalOpportunitiesFilters, list_fin
 from app.services.execution_preparation import build_execution_candidates, to_paper_execution_records
 from app.services.execution_intents import candidates_to_order_intents
 from app.services.execution_preflight import evaluate_execution_preflight_bundles
+from app.services.execution_policy import (
+    evaluate_execution_policy_decisions,
+    resolve_execution_policy_config_snapshot,
+)
 from app.services.execution_dry_run_submit import simulate_dry_run_execution_attempts
 from app.execution_adapters.registry import get_execution_adapter
 from app.services.research_summary import ResearchSummaryService
@@ -742,6 +746,51 @@ async def get_execution_preflight_preview(
         "preview_only": True,
         "is_live": False,
         "items": [item.model_dump() for item in bundles],
+    }
+
+
+@app.get("/api/v1/execution/policy-preview")
+async def get_execution_policy_preview(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    route_keys: list[str] | None = Query(
+        default=None,
+        description="Repeat route_keys to filter preview to specific execution routes",
+    ),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    route_key_set = {str(item) for item in (route_keys or []) if str(item)}
+    candidates = list_execution_candidates(
+        symbols=symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        include_test=include_test,
+    )
+    selected_candidates = candidates
+    if route_key_set:
+        selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
+
+    candidate_models = [ExecutionCandidate.model_validate(item) for item in selected_candidates]
+    preflight_bundles = await evaluate_execution_preflight_bundles(candidate_models)
+    config_snapshot = resolve_execution_policy_config_snapshot(settings)
+    decisions = evaluate_execution_policy_decisions(
+        candidates=candidate_models,
+        preflight_bundles=preflight_bundles,
+        config=config_snapshot,
+    )
+    allowed_count = sum(1 for item in decisions if item.allowed)
+    blocked_count = len(decisions) - allowed_count
+
+    return {
+        "candidate_count": len(candidates),
+        "decision_count": len(decisions),
+        "allowed_count": allowed_count,
+        "blocked_count": blocked_count,
+        "preview_only": True,
+        "is_live": False,
+        "config": config_snapshot.model_dump(),
+        "items": [item.model_dump() for item in decisions],
     }
 
 
