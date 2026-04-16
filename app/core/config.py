@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     execution_account_state_fixture_remaining_symbol_cap_pct: float | None = None
     execution_account_state_fixture_remaining_long_exchange_cap_pct: float | None = None
     execution_account_state_fixture_remaining_short_exchange_cap_pct: float | None = None
+    execution_policy_execution_enabled: bool = False
+    execution_policy_allow_test_execution: bool = False
+    execution_policy_allowed_venues: list[str] = ["binance", "okx", "hyperliquid", "lighter"]
+    execution_policy_allowed_symbols: list[str] = []
+    execution_policy_blocked_symbols: list[str] = []
+    execution_policy_max_target_notional_usd: float | None = None
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     observations_db_path: str = "./data/observations.sqlite3"
