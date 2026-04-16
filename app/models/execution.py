@@ -259,11 +259,15 @@ class DryRunExecutionLegAttempt(BaseModel):
     side: Literal["buy", "sell"]
     symbol: str
     route_key: str
+    leg_index: Literal[0, 1]
+    submit_sequence: Literal[1, 2]
+    submit_order: Literal["first", "second"]
     quantity: float | None = None
     request_preview: VenueRequestPreview | None = None
     submit_status: Literal["accepted", "rejected", "skipped"] = "skipped"
     submit_message: str | None = None
     accepted: bool = False
+    supported_venue: bool = False
     validation_errors: list[str] = Field(default_factory=list)
     validation_warnings: list[str] = Field(default_factory=list)
 
