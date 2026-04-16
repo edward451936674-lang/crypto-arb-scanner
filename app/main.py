@@ -53,6 +53,7 @@ from app.services.final_opportunities import FinalOpportunitiesFilters, list_fin
 from app.services.execution_preparation import build_execution_candidates, to_paper_execution_records
 from app.services.execution_intents import candidates_to_order_intents
 from app.services.execution_preflight import evaluate_execution_preflight_bundles
+from app.services.execution_dry_run_submit import simulate_dry_run_execution_attempts
 from app.execution_adapters.registry import get_execution_adapter
 from app.services.research_summary import ResearchSummaryService
 from app.venues.registry import list_venue_definitions
@@ -741,6 +742,64 @@ async def get_execution_preflight_preview(
         "preview_only": True,
         "is_live": False,
         "items": [item.model_dump() for item in bundles],
+    }
+
+
+@app.post("/api/v1/execution/dry-run-submit")
+async def post_execution_dry_run_submit(
+    payload: dict[str, object] | None = Body(default=None),
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    route_keys: list[str] | None = Query(
+        default=None,
+        description="Repeat route_keys to filter preview to specific execution routes",
+    ),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    payload = payload or {}
+    payload_symbols = payload.get("symbols")
+    payload_top_n = payload.get("top_n")
+    payload_only_actionable = payload.get("only_actionable")
+    payload_include_test = payload.get("include_test")
+    payload_route_keys = payload.get("route_keys")
+
+    resolved_symbols = symbols if payload_symbols is None else str(payload_symbols)
+    resolved_top_n = int(_coerce_float(top_n if payload_top_n is None else payload_top_n, default=10.0))
+    resolved_top_n = min(500, max(1, resolved_top_n))
+    resolved_only_actionable = _coerce_bool(only_actionable if payload_only_actionable is None else payload_only_actionable, default=False)
+    resolved_include_test = _coerce_bool(include_test if payload_include_test is None else payload_include_test, default=False)
+
+    query_route_keys = [str(item) for item in (route_keys or []) if str(item)]
+    body_route_keys = [str(item) for item in payload_route_keys] if isinstance(payload_route_keys, list) else []
+    route_key_set = {item for item in [*query_route_keys, *body_route_keys] if item}
+
+    candidates = list_execution_candidates(
+        symbols=resolved_symbols,
+        top_n=resolved_top_n,
+        only_actionable=resolved_only_actionable,
+        include_test=resolved_include_test,
+    )
+    selected_candidates = candidates
+    if route_key_set:
+        selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
+
+    attempts = await simulate_dry_run_execution_attempts(
+        [ExecutionCandidate.model_validate(item) for item in selected_candidates]
+    )
+    accepted_bundle_count = sum(1 for item in attempts if item.bundle_status == "accepted")
+    blocked_bundle_count = sum(1 for item in attempts if item.bundle_status == "blocked")
+    failed_bundle_count = sum(1 for item in attempts if item.bundle_status == "failed")
+
+    return {
+        "candidate_count": len(candidates),
+        "attempt_count": len(attempts),
+        "accepted_bundle_count": accepted_bundle_count,
+        "blocked_bundle_count": blocked_bundle_count,
+        "failed_bundle_count": failed_bundle_count,
+        "preview_only": True,
+        "is_live": False,
+        "items": [item.model_dump() for item in attempts],
     }
 
 
