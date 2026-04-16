@@ -240,3 +240,44 @@ class ExecutionBundlePreflight(BaseModel):
     is_executable_bundle: bool = False
     preview_only: bool = True
     is_live: bool = False
+
+
+DryRunExecutionStatus = Literal["accepted", "blocked", "failed"]
+DryRunExecutionFailureReason = Literal[
+    "preflight_blocked",
+    "long_leg_submit_rejected",
+    "short_leg_submit_rejected",
+    "unsupported_venue",
+    "missing_route_key",
+    "quantity_unresolved",
+    "validation_error",
+]
+
+
+class DryRunExecutionLegAttempt(BaseModel):
+    venue_id: str
+    side: Literal["buy", "sell"]
+    symbol: str
+    route_key: str
+    quantity: float | None = None
+    request_preview: VenueRequestPreview | None = None
+    submit_status: Literal["accepted", "rejected", "skipped"] = "skipped"
+    submit_message: str | None = None
+    accepted: bool = False
+    validation_errors: list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
+
+
+class DryRunExecutionAttempt(BaseModel):
+    attempt_id: str
+    route_key: str
+    symbol: str
+    long_leg: DryRunExecutionLegAttempt
+    short_leg: DryRunExecutionLegAttempt
+    bundle_status: DryRunExecutionStatus = "blocked"
+    failure_reasons: list[DryRunExecutionFailureReason] = Field(default_factory=list)
+    submitted_leg_count: int = 0
+    accepted_leg_count: int = 0
+    preview_only: bool = True
+    is_live: bool = False
+    created_at_ms: int
