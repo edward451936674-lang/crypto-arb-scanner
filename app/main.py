@@ -65,6 +65,10 @@ from app.services.execution_account_state_gate import (
     evaluate_execution_account_state_decisions,
     resolve_execution_account_state_config_snapshot,
 )
+from app.services.execution_credential_readiness import (
+    evaluate_execution_credential_readiness_decisions,
+    resolve_execution_credential_readiness_config_snapshot,
+)
 from app.services.execution_dry_run_submit import simulate_dry_run_execution_attempts
 from app.execution_adapters.registry import get_execution_adapter
 from app.services.research_summary import ResearchSummaryService
@@ -842,6 +846,46 @@ async def get_execution_account_state_preview(
     }
 
 
+@app.get("/api/v1/execution/credential-readiness-preview")
+async def get_execution_credential_readiness_preview(
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    route_keys: list[str] | None = Query(
+        default=None,
+        description="Repeat route_keys to filter preview to specific execution routes",
+    ),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    route_key_set = {str(item) for item in (route_keys or []) if str(item)}
+    candidates = list_execution_candidates(
+        symbols=symbols,
+        top_n=top_n,
+        only_actionable=only_actionable,
+        include_test=include_test,
+    )
+    selected_candidates = candidates
+    if route_key_set:
+        selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
+
+    candidate_models = [ExecutionCandidate.model_validate(item) for item in selected_candidates]
+    config_snapshot = resolve_execution_credential_readiness_config_snapshot(settings)
+    decisions = evaluate_execution_credential_readiness_decisions(candidates=candidate_models, config=config_snapshot)
+    allowed_count = sum(1 for item in decisions if item.allowed)
+    blocked_count = len(decisions) - allowed_count
+
+    return {
+        "candidate_count": len(candidates),
+        "decision_count": len(decisions),
+        "allowed_count": allowed_count,
+        "blocked_count": blocked_count,
+        "preview_only": True,
+        "is_live": False,
+        "config": config_snapshot.model_dump(),
+        "items": [item.model_dump() for item in decisions],
+    }
+
+
 
 
 @app.post("/api/v1/execution/live-entry-preview")
@@ -894,11 +938,17 @@ async def post_execution_live_entry_preview(
         preflight_bundles=preflight_bundles,
         config=policy_config,
     )
+    credential_readiness_config = resolve_execution_credential_readiness_config_snapshot(settings)
+    credential_readiness_decisions = evaluate_execution_credential_readiness_decisions(
+        candidates=candidate_models,
+        config=credential_readiness_config,
+    )
     live_entry_config = resolve_live_execution_entry_config_snapshot(settings)
     live_entry_results = evaluate_live_execution_entry_decisions(
         candidates=candidate_models,
         preflight_bundles=preflight_bundles,
         policy_decisions=policy_decisions,
+        credential_readiness_decisions=credential_readiness_decisions,
         config=live_entry_config,
     )
     allowed_count = sum(1 for item in live_entry_results if item.allowed_to_enter_live_path)
