@@ -455,10 +455,11 @@ async def get_execution_venue_capabilities() -> dict[str, object]:
     sdk_heavy_venues = [
         item.venue_id.value for item in venue_definitions if item.capabilities.supports_sdk_recommended
     ]
+    live_supported_now = any(item.capabilities.live_supported_now for item in venue_definitions)
     return {
-        "live_execution_enabled": False,
-        "live_execution_status": "not_enabled_in_this_repo",
-        "message": "Live execution adapters are intentionally not implemented yet.",
+        "live_execution_enabled": live_supported_now,
+        "live_execution_status": "pilot_available" if live_supported_now else "not_enabled_in_this_repo",
+        "message": "Live execution remains guarded and disabled by default; only pilot venue paths are supported.",
         "execution_styles": {
             "classic_api_style_venues": classic_api_style_venues,
             "signed_action_style_venues": signed_action_style_venues,

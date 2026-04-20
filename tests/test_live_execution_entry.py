@@ -207,7 +207,7 @@ def test_venues_not_live_enabled_are_blocked() -> None:
 
 def test_stub_only_adapters_are_blocked() -> None:
     decision = evaluate_live_execution_entry_decision(
-        candidate=_candidate(),
+        candidate=_candidate(long_exchange="okx", short_exchange="hyperliquid"),
         preflight=_preflight("ready"),
         policy_decision=_policy_decision(policy_status="allowed"),
         credential_readiness_decision=_credential_readiness_decision(status="allowed"),

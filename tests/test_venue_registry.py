@@ -7,7 +7,9 @@ def test_venue_registry_contains_all_current_supported_venues() -> None:
     assert [item.venue_id.value for item in venues] == ["binance", "okx", "hyperliquid", "lighter"]
     assert all(item.capabilities.supports_snapshots for item in venues)
     assert all(item.capabilities.paper_supported for item in venues)
-    assert all(item.capabilities.live_supported_now is False for item in venues)
+    by_venue = {item.venue_id.value: item for item in venues}
+    assert by_venue["binance"].capabilities.live_supported_now is True
+    assert all(by_venue[name].capabilities.live_supported_now is False for name in ("okx", "hyperliquid", "lighter"))
 
 
 def test_venue_registry_contains_execution_reality_metadata() -> None:

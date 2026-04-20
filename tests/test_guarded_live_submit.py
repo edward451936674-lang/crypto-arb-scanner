@@ -193,6 +193,69 @@ def test_live_submit_endpoints_have_no_network_calls(tmp_path, monkeypatch) -> N
     assert response.json()["attempt_count"] == 1
 
 
+def test_live_submit_armed_path_can_reach_binance_pilot_adapter_with_mocked_transport(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many([_record(symbol="BTC", long_exchange="binance", short_exchange="binance")])
+    monkeypatch.setattr("app.main.observation_store", store)
+    monkeypatch.setattr("app.main.settings.execution_policy_execution_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_policy_allow_test_execution", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_policy_allowed_venues", ["binance"], raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_fixture_remaining_total_notional_usd", 5000.0, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_fixture_remaining_symbol_notional_usd", {"BTC": 5000.0}, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_fixture_remaining_long_exchange_notional_usd", {"binance": 5000.0}, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_fixture_remaining_short_exchange_notional_usd", {"binance": 5000.0}, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_credential_readiness_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_credential_fixture_configured_venues", {"binance": True}, raising=False)
+    monkeypatch.setattr("app.main.settings.live_execution_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.live_execution_allowed_venues", ["binance"], raising=False)
+    monkeypatch.setattr("app.main.settings.guarded_live_submit_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.guarded_live_submit_require_arm_token", False, raising=False)
+    monkeypatch.setenv("ARB_BINANCE_API_KEY", "a" * 16)
+    monkeypatch.setenv("ARB_BINANCE_API_SECRET", "b" * 32)
+
+    async def fake_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return {"status": "NEW", "symbol": "BTC", "orderId": 1, "origQty": "1", "executedQty": "0"}
+
+    monkeypatch.setattr("app.execution_adapters.binance_live.HttpxBinanceTransport.request", fake_request)
+
+    client = TestClient(app)
+    response = client.post("/api/v1/execution/live-submit", json={"top_n": 10})
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["submitted_count"] == 1
+    assert payload["items"][0]["real_adapter_path_attempted"] is True
+    assert payload["items"][0]["accepted_leg_count"] == 2
+
+
+def test_live_submit_mixed_venue_paths_fail_with_explicit_reason(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many([_record(symbol="BTC", long_exchange="binance", short_exchange="okx")])
+    monkeypatch.setattr("app.main.observation_store", store)
+    monkeypatch.setattr("app.main.settings.execution_policy_execution_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_policy_allow_test_execution", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_policy_allowed_venues", ["binance", "okx"], raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_fixture_remaining_total_notional_usd", 5000.0, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_fixture_remaining_symbol_notional_usd", {"BTC": 5000.0}, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_fixture_remaining_long_exchange_notional_usd", {"binance": 5000.0}, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_account_state_fixture_remaining_short_exchange_notional_usd", {"okx": 5000.0}, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_credential_readiness_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_credential_fixture_configured_venues", {"binance": True, "okx": True}, raising=False)
+    monkeypatch.setattr("app.main.settings.live_execution_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.live_execution_allowed_venues", ["binance", "okx"], raising=False)
+    monkeypatch.setattr("app.main.settings.guarded_live_submit_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.guarded_live_submit_require_arm_token", False, raising=False)
+
+    client = TestClient(app)
+    response = client.post("/api/v1/execution/live-submit", json={"top_n": 10})
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["blocked_count"] == 1
+    assert "mixed_live_venue_path_not_supported_yet" in payload["items"][0]["block_reasons"]
+
+
 def test_live_submit_attempts_schema_exists_and_observations_schema_unchanged(tmp_path) -> None:
     store = ObservationStore(str(tmp_path / "observations.sqlite3"))
     with store._connect() as conn:

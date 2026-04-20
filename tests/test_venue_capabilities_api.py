@@ -14,11 +14,13 @@ def test_venue_capabilities_endpoint_returns_registry_without_network(monkeypatc
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["live_execution_enabled"] is False
-    assert payload["live_execution_status"] == "not_enabled_in_this_repo"
+    assert payload["live_execution_enabled"] is True
+    assert payload["live_execution_status"] == "pilot_available"
     assert len(payload["venues"]) == 4
     assert [item["venue_id"] for item in payload["venues"]] == ["binance", "okx", "hyperliquid", "lighter"]
-    assert all(item["capabilities"]["live_supported_now"] is False for item in payload["venues"])
+    by_venue = {item["venue_id"]: item for item in payload["venues"]}
+    assert by_venue["binance"]["capabilities"]["live_supported_now"] is True
+    assert all(by_venue[item]["capabilities"]["live_supported_now"] is False for item in ("okx", "hyperliquid", "lighter"))
 
     assert payload["execution_styles"] == {
         "classic_api_style_venues": ["binance", "okx"],
@@ -26,7 +28,6 @@ def test_venue_capabilities_endpoint_returns_registry_without_network(monkeypatc
         "sdk_recommended_venues": ["hyperliquid", "lighter"],
     }
 
-    by_venue = {item["venue_id"]: item for item in payload["venues"]}
     assert by_venue["binance"]["capabilities"]["supports_rest_trading_api"] is True
     assert by_venue["okx"]["capabilities"]["supports_private_websocket_trading"] is True
     assert by_venue["hyperliquid"]["capabilities"]["supports_signed_actions"] is True

@@ -25,6 +25,47 @@
 
 ---
 
+## Guarded Live Pilot (v1)
+
+首个真实执行适配器试点仅支持 **Binance**，并且仍在严格保护边界后运行：
+
+- 默认依然是非 live（`guarded_live_submit` 默认关闭）。
+- 只有在全部 gate 通过 + 明确 arm 后，才会尝试走 Binance pilot live adapter。
+- 当前仅支持非常窄的 route：`binance -> binance` 双腿路径。
+- 混合 venue 或第二腿非 Binance 会被显式阻断并返回机器可读原因（如 `mixed_live_venue_path_not_supported_yet`）。
+
+### Required config / credentials
+
+- `ARB_BINANCE_API_KEY`
+- `ARB_BINANCE_API_SECRET`
+- 可选：`ARB_BINANCE_TRADE_BASE_URL`（默认 `https://fapi.binance.com`）
+- 可选：`ARB_BINANCE_RECV_WINDOW_MS`（默认 `5000`）
+
+凭证只从配置/环境读取，不会打印或持久化 secret。
+
+### Arming guarded live submit
+
+仍需满足已有 policy / account-state / credential-readiness / live-entry gate。
+
+同时还需：
+
+- `ARB_GUARDED_LIVE_SUBMIT_ENABLED=true`
+- 若启用 arm token 校验：提供匹配的 `arm_token`
+
+### What is intentionally not supported yet
+
+- 多 venue live submit 编排
+- 非 Binance live adapter
+- position / balance live methods
+- 全路径 cancel / order-status 路由编排
+
+### Safe testing
+
+- 默认测试流全部使用 mocked transport，不依赖真实网络与真实凭证。
+- 可继续使用 preview / dry-run 路径验证流程；live pilot 测试应显式 mock outbound transport。
+
+---
+
 ## Supported Venues
 
 当前已接入的交易所：
