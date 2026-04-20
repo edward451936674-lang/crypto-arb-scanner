@@ -204,6 +204,24 @@ class AdapterExecutionResult(BaseModel):
     is_live: bool = False
 
 
+class ExecutionAdapterCapability(BaseModel):
+    venue_id: str
+    supports_live_submit_now: bool = False
+    supports_cancel_now: bool = False
+    supports_order_status_now: bool = False
+    credential_type: str = "none"
+    sandbox_or_testnet_supported: bool = False
+    stub_only: bool = True
+
+
+class CredentialReadinessSignal(BaseModel):
+    venue_id: str
+    credential_type: str
+    status: Literal["missing", "present", "malformed"]
+    reasons: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 ExecutionPreflightStatus = Literal["ready", "blocked"]
 ExecutionPolicyStatus = Literal["allowed", "blocked"]
 ExecutionAccountStateStatus = Literal["allowed", "blocked"]
@@ -434,6 +452,11 @@ LiveSubmitBlockReason = Literal[
     "arm_token_mismatch",
     "unsupported_live_submit_path",
     "no_live_adapter_implemented",
+    "mixed_live_venue_path_not_supported_yet",
+    "second_leg_live_adapter_not_implemented",
+    "cancel_not_supported_for_route",
+    "order_status_not_supported_for_route",
+    "live_adapter_submit_failed",
 ]
 
 
@@ -458,6 +481,7 @@ class LiveSubmitLegAttempt(BaseModel):
     submit_status: LiveSubmitStatus = "blocked"
     submit_message: str | None = None
     accepted: bool = False
+    block_reasons: list[str] = Field(default_factory=list)
     validation_errors: list[str] = Field(default_factory=list)
     validation_warnings: list[str] = Field(default_factory=list)
 
@@ -473,6 +497,7 @@ class LiveSubmitAttempt(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     submitted_leg_count: int = 0
     accepted_leg_count: int = 0
+    real_adapter_path_attempted: bool = False
     preview_only: bool = True
     is_live: bool = False
     created_at_ms: int

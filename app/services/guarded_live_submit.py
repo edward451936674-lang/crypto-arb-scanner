@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 from app.core.config import Settings, get_settings
+from app.execution_adapters.binance_live import BinanceExecutionAdapterLive
 from app.models.execution import (
     ExecutionAccountStateDecision,
     ExecutionBundlePreflight,
@@ -23,6 +24,7 @@ from app.services.execution_credential_readiness import (
     evaluate_execution_credential_readiness_decisions,
     resolve_execution_credential_readiness_config_snapshot,
 )
+from app.services.execution_intents import candidate_to_order_intents
 from app.services.execution_policy import (
     evaluate_execution_policy_decisions,
     resolve_execution_policy_config_snapshot,
@@ -65,12 +67,13 @@ def _leg_attempt_from_preflight(leg: ExecutionLegPreflight, *, submit_status: st
         submit_status=submit_status,
         submit_message=submit_message,
         accepted=False,
+        block_reasons=[],
         validation_errors=list(leg.validation_errors),
         validation_warnings=list(leg.validation_warnings),
     )
 
 
-def _build_attempt(
+async def _build_attempt(
     *,
     candidate: ExecutionCandidate,
     preflight: ExecutionBundlePreflight,
@@ -79,6 +82,7 @@ def _build_attempt(
     credential_readiness_decision: ExecutionCredentialReadinessDecision,
     live_entry_result: LiveExecutionEntryResult,
     config: LiveSubmitConfigSnapshot,
+    settings: Settings,
     request_arm_token: str,
 ) -> LiveSubmitAttempt:
     created_at_ms = int(time.time() * 1000)
@@ -111,16 +115,92 @@ def _build_attempt(
         elif request_arm_token != config.guarded_live_submit_arm_token:
             block_reasons.append("arm_token_mismatch")
 
-    if not block_reasons:
-        block_reasons.append("no_live_adapter_implemented")
+    long_leg = _leg_attempt_from_preflight(preflight.long_leg, submit_status="blocked", submit_message="blocked")
+    short_leg = _leg_attempt_from_preflight(preflight.short_leg, submit_status="blocked", submit_message="blocked")
 
-    status = "blocked" if block_reasons else "submitted"
-    message = "blocked" if block_reasons else "submitted"
-    if "no_live_adapter_implemented" in block_reasons:
-        message = "no_live_adapter_implemented"
+    if candidate.long_exchange.lower() != candidate.short_exchange.lower():
+        block_reasons.append("mixed_live_venue_path_not_supported_yet")
 
-    long_leg = _leg_attempt_from_preflight(preflight.long_leg, submit_status=status, submit_message=message)
-    short_leg = _leg_attempt_from_preflight(preflight.short_leg, submit_status=status, submit_message=message)
+    if block_reasons:
+        return LiveSubmitAttempt(
+            attempt_id=f"livesubmit:{candidate.route_key}:{created_at_ms}",
+            route_key=candidate.route_key,
+            symbol=candidate.symbol,
+            long_leg=long_leg,
+            short_leg=short_leg,
+            live_submit_status="blocked",
+            block_reasons=sorted(set(block_reasons)),
+            warnings=sorted(set(warnings)),
+            submitted_leg_count=0,
+            accepted_leg_count=0,
+            real_adapter_path_attempted=False,
+            preview_only=False,
+            is_live=False,
+            created_at_ms=created_at_ms,
+        )
+
+    if candidate.long_exchange.lower() != candidate.short_exchange.lower():
+        block_reasons.append("mixed_live_venue_path_not_supported_yet")
+    elif candidate.long_exchange.lower() != "binance":
+        block_reasons.append("unsupported_live_submit_path")
+    elif preflight.short_leg.venue_id.lower() != "binance":
+        block_reasons.append("second_leg_live_adapter_not_implemented")
+
+    if block_reasons:
+        long_leg.block_reasons = sorted(set(block_reasons))
+        short_leg.block_reasons = sorted(set(block_reasons))
+        long_leg.submit_message = "blocked_before_adapter_submit"
+        short_leg.submit_message = "blocked_before_adapter_submit"
+        return LiveSubmitAttempt(
+            attempt_id=f"livesubmit:{candidate.route_key}:{created_at_ms}",
+            route_key=candidate.route_key,
+            symbol=candidate.symbol,
+            long_leg=long_leg,
+            short_leg=short_leg,
+            live_submit_status="blocked",
+            block_reasons=sorted(set(block_reasons)),
+            warnings=sorted(set(warnings)),
+            submitted_leg_count=0,
+            accepted_leg_count=0,
+            real_adapter_path_attempted=False,
+            preview_only=False,
+            is_live=False,
+            created_at_ms=created_at_ms,
+        )
+
+    adapter = BinanceExecutionAdapterLive(settings=settings)
+    intents = {intent.side: intent for intent in candidate_to_order_intents(candidate)}
+    real_adapter_path_attempted = False
+
+    for side, leg_attempt in (("buy", long_leg), ("sell", short_leg)):
+        intent = intents[side]
+        result = None
+        try:
+            real_adapter_path_attempted = True
+            leg_attempt.attempted_live_submit = True
+            result = await adapter.place_order(intent)
+            leg_attempt.submit_status = "submitted" if result.accepted else "failed"
+            leg_attempt.submit_message = str(result.message or "submitted")
+            leg_attempt.accepted = bool(result.accepted)
+            if result.translation is not None:
+                leg_attempt.validation_errors = list(result.translation.preview.validation_errors)
+                leg_attempt.validation_warnings = list(result.translation.preview.validation_warnings)
+            if not result.accepted:
+                leg_attempt.block_reasons.append("live_adapter_submit_failed")
+        except Exception as exc:  # noqa: BLE001
+            leg_attempt.submit_status = "failed"
+            leg_attempt.submit_message = f"adapter_exception:{type(exc).__name__}"
+            leg_attempt.accepted = False
+            leg_attempt.block_reasons.append("live_adapter_submit_failed")
+        if result is not None and result.accepted is False:
+            block_reasons.append("live_adapter_submit_failed")
+
+    submitted_leg_count = sum(1 for item in (long_leg, short_leg) if item.attempted_live_submit)
+    accepted_leg_count = sum(1 for item in (long_leg, short_leg) if item.accepted)
+
+    live_submit_status = "submitted" if accepted_leg_count == 2 else "failed"
+    if live_submit_status == "failed":
+        block_reasons.append("live_adapter_submit_failed")
 
     return LiveSubmitAttempt(
         attempt_id=f"livesubmit:{candidate.route_key}:{created_at_ms}",
@@ -128,13 +208,14 @@ def _build_attempt(
         symbol=candidate.symbol,
         long_leg=long_leg,
         short_leg=short_leg,
-        live_submit_status="blocked" if block_reasons else "submitted",
+        live_submit_status=live_submit_status,
         block_reasons=sorted(set(block_reasons)),
         warnings=sorted(set(warnings)),
-        submitted_leg_count=0,
-        accepted_leg_count=0,
+        submitted_leg_count=submitted_leg_count,
+        accepted_leg_count=accepted_leg_count,
+        real_adapter_path_attempted=real_adapter_path_attempted,
         preview_only=False,
-        is_live=False,
+        is_live=live_submit_status == "submitted",
         created_at_ms=created_at_ms,
     )
 
@@ -178,7 +259,7 @@ async def run_guarded_live_submit(
         strict=False,
     ):
         attempts.append(
-            _build_attempt(
+            await _build_attempt(
                 candidate=candidate,
                 preflight=preflight,
                 policy_decision=policy_decision,
@@ -186,6 +267,7 @@ async def run_guarded_live_submit(
                 credential_readiness_decision=credential_decision,
                 live_entry_result=live_entry_result,
                 config=submit_config,
+                settings=resolved_settings,
                 request_arm_token=request_arm_token,
             )
         )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.core.config import Settings, get_settings
-from app.execution_adapters.registry import get_execution_adapter
+from app.execution_adapters.registry import get_execution_adapter_capability
 from app.models.execution import (
     ExecutionBundlePreflight,
     ExecutionCandidate,
@@ -26,9 +26,7 @@ def resolve_live_execution_entry_config_snapshot(settings: Settings | None = Non
 
 
 def _is_adapter_stub_only(venue_id: str) -> bool:
-    adapter = get_execution_adapter(venue_id)
-    module_name = type(adapter).__module__
-    return module_name == "app.execution_adapters.stubs"
+    return get_execution_adapter_capability(venue_id).stub_only
 
 
 def evaluate_live_execution_entry_decision(
@@ -75,9 +73,6 @@ def evaluate_live_execution_entry_decision(
 
     if credential_readiness_decision.credential_readiness_status != "allowed":
         block_reasons.append("credential_readiness_blocked")
-
-    if not block_reasons:
-        block_reasons.append("unsupported_live_execution_path")
 
     unique_block_reasons = sorted(set(block_reasons))
     entry_status = "allowed" if not unique_block_reasons else "blocked"

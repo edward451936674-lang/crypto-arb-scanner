@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     enable_lighter: bool = True
 
     binance_base_url: str = "https://fapi.binance.com"
+    binance_trade_base_url: str = "https://fapi.binance.com"
+    binance_api_key: str = ""
+    binance_api_secret: str = ""
+    binance_recv_window_ms: int = 5000
+    binance_testnet_enabled: bool = False
     okx_base_url: str = "https://www.okx.com"
     okx_ws_url: str = "wss://ws.okx.com:8443/ws/v5/public"
     okx_ws_timeout_seconds: float = 5.0
