@@ -263,6 +263,37 @@ class ExecutionPolicyConfigSnapshot(BaseModel):
     max_target_notional_usd: float | None = None
 
 
+
+LiveExecutionEntryStatus = Literal["allowed", "blocked"]
+LiveExecutionEntryBlockReason = Literal[
+    "live_execution_not_enabled",
+    "policy_blocked",
+    "venue_not_live_enabled",
+    "adapter_is_stub_only",
+    "credentials_not_configured",
+    "unsupported_live_execution_path",
+]
+
+
+class LiveExecutionEntryResult(BaseModel):
+    route_key: str
+    symbol: str
+    long_exchange: str
+    short_exchange: str
+    policy_status: ExecutionPolicyStatus = "blocked"
+    entry_status: LiveExecutionEntryStatus = "blocked"
+    allowed_to_enter_live_path: bool = False
+    block_reasons: list[LiveExecutionEntryBlockReason] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    preview_only: bool = True
+    is_live: bool = False
+
+
+class LiveExecutionEntryConfigSnapshot(BaseModel):
+    live_execution_enabled: bool = False
+    live_execution_allowed_venues: list[str] = Field(default_factory=list)
+
+
 class ExecutionPolicyDecision(BaseModel):
     route_key: str
     symbol: str
