@@ -207,6 +207,7 @@ class AdapterExecutionResult(BaseModel):
 ExecutionPreflightStatus = Literal["ready", "blocked"]
 ExecutionPolicyStatus = Literal["allowed", "blocked"]
 ExecutionAccountStateStatus = Literal["allowed", "blocked"]
+ExecutionCredentialReadinessStatus = Literal["allowed", "blocked"]
 ExecutionAccountStateBlockReason = Literal[
     "execution_account_state_disabled",
     "target_notional_missing",
@@ -229,6 +230,14 @@ ExecutionPolicyBlockReason = Literal[
     "symbol_explicitly_blocked",
     "target_notional_missing",
     "target_notional_exceeds_limit",
+]
+ExecutionCredentialReadinessBlockReason = Literal[
+    "credential_readiness_disabled",
+    "long_credentials_missing",
+    "short_credentials_missing",
+    "long_credentials_status_unknown",
+    "short_credentials_status_unknown",
+    "unsupported_credential_fixture",
 ]
 ExecutionPreflightBlocker = Literal[
     "long_quantity_unresolved",
@@ -303,6 +312,26 @@ class ExecutionAccountStateDecision(BaseModel):
     is_live: bool = False
 
 
+class ExecutionCredentialReadinessConfigSnapshot(BaseModel):
+    execution_credential_readiness_enabled: bool = False
+    execution_credential_fixture_configured_venues: dict[str, bool] = Field(default_factory=dict)
+
+
+class ExecutionCredentialReadinessDecision(BaseModel):
+    route_key: str
+    symbol: str
+    long_exchange: str
+    short_exchange: str
+    credential_readiness_status: ExecutionCredentialReadinessStatus = "blocked"
+    allowed: bool = False
+    block_reasons: list[ExecutionCredentialReadinessBlockReason] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    long_credentials_configured: bool | None = None
+    short_credentials_configured: bool | None = None
+    preview_only: bool = True
+    is_live: bool = False
+
+
 
 LiveExecutionEntryStatus = Literal["allowed", "blocked"]
 LiveExecutionEntryBlockReason = Literal[
@@ -310,7 +339,7 @@ LiveExecutionEntryBlockReason = Literal[
     "policy_blocked",
     "venue_not_live_enabled",
     "adapter_is_stub_only",
-    "credentials_not_configured",
+    "credential_readiness_blocked",
     "unsupported_live_execution_path",
 ]
 

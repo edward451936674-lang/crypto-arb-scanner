@@ -4,6 +4,7 @@ from app.main import app
 from app.models.execution import (
     ExecutionBundlePreflight,
     ExecutionCandidate,
+    ExecutionCredentialReadinessDecision,
     ExecutionLegPreflight,
     ExecutionPolicyDecision,
     LiveExecutionEntryConfigSnapshot,
@@ -99,6 +100,24 @@ def _policy_decision(*, policy_status: str = "allowed") -> ExecutionPolicyDecisi
     )
 
 
+def _credential_readiness_decision(*, status: str = "blocked", block_reasons: list[str] | None = None) -> ExecutionCredentialReadinessDecision:
+    reasons = block_reasons if block_reasons is not None else (["credential_readiness_disabled"] if status == "blocked" else [])
+    return ExecutionCredentialReadinessDecision(
+        route_key="BTC:binance->okx",
+        symbol="BTC",
+        long_exchange="binance",
+        short_exchange="okx",
+        credential_readiness_status=status,
+        allowed=status == "allowed",
+        block_reasons=reasons,
+        warnings=[],
+        long_credentials_configured=True if status == "allowed" else None,
+        short_credentials_configured=True if status == "allowed" else None,
+        preview_only=True,
+        is_live=False,
+    )
+
+
 def _record(
     *,
     symbol: str,
@@ -150,6 +169,7 @@ def test_live_execution_enabled_false_blocks_everything() -> None:
         candidate=_candidate(),
         preflight=_preflight("ready"),
         policy_decision=_policy_decision(policy_status="allowed"),
+        credential_readiness_decision=_credential_readiness_decision(),
         config=LiveExecutionEntryConfigSnapshot(
             live_execution_enabled=False,
             live_execution_allowed_venues=["binance", "okx"],
@@ -165,6 +185,7 @@ def test_policy_blocked_bundle_is_blocked_at_live_entry() -> None:
         candidate=_candidate(),
         preflight=_preflight("ready"),
         policy_decision=_policy_decision(policy_status="blocked"),
+        credential_readiness_decision=_credential_readiness_decision(status="allowed"),
         config=LiveExecutionEntryConfigSnapshot(live_execution_enabled=True),
     )
 
@@ -177,6 +198,7 @@ def test_venues_not_live_enabled_are_blocked() -> None:
         candidate=_candidate(long_exchange="binance", short_exchange="okx"),
         preflight=_preflight("ready"),
         policy_decision=_policy_decision(policy_status="allowed"),
+        credential_readiness_decision=_credential_readiness_decision(status="allowed"),
         config=LiveExecutionEntryConfigSnapshot(live_execution_enabled=True),
     )
 
@@ -188,10 +210,27 @@ def test_stub_only_adapters_are_blocked() -> None:
         candidate=_candidate(),
         preflight=_preflight("ready"),
         policy_decision=_policy_decision(policy_status="allowed"),
+        credential_readiness_decision=_credential_readiness_decision(status="allowed"),
         config=LiveExecutionEntryConfigSnapshot(live_execution_enabled=True),
     )
 
     assert "adapter_is_stub_only" in decision.block_reasons
+
+
+def test_credential_readiness_blocks_live_entry() -> None:
+    decision = evaluate_live_execution_entry_decision(
+        candidate=_candidate(),
+        preflight=_preflight("ready"),
+        policy_decision=_policy_decision(policy_status="allowed"),
+        credential_readiness_decision=_credential_readiness_decision(
+            status="blocked",
+            block_reasons=["long_credentials_missing"],
+        ),
+        config=LiveExecutionEntryConfigSnapshot(live_execution_enabled=True),
+    )
+
+    assert "credential_readiness_blocked" in decision.block_reasons
+    assert "credential_readiness:long_credentials_missing" in decision.warnings
 
 
 def test_live_entry_preview_endpoint_summary_counts_work(tmp_path, monkeypatch) -> None:
@@ -209,6 +248,8 @@ def test_live_entry_preview_endpoint_summary_counts_work(tmp_path, monkeypatch) 
     monkeypatch.setattr("app.main.settings.execution_policy_allowed_symbols", [], raising=False)
     monkeypatch.setattr("app.main.settings.execution_policy_blocked_symbols", [], raising=False)
     monkeypatch.setattr("app.main.settings.live_execution_enabled", False, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_credential_readiness_enabled", False, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_credential_fixture_configured_venues", {}, raising=False)
 
     client = TestClient(app)
     response = client.post("/api/v1/execution/live-entry-preview", params={"top_n": 10, "include_test": False})
@@ -227,6 +268,8 @@ def test_live_entry_preview_endpoint_has_no_network_calls(tmp_path, monkeypatch)
     store = ObservationStore(str(tmp_path / "observations.sqlite3"))
     store.insert_many([_record(symbol="BTC", long_exchange="binance", short_exchange="okx")])
     monkeypatch.setattr("app.main.observation_store", store)
+    monkeypatch.setattr("app.main.settings.execution_credential_readiness_enabled", False, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_credential_fixture_configured_venues", {}, raising=False)
 
     async def fail_fetch_snapshots(*args, **kwargs):
         raise AssertionError("network call should not happen in live entry preview API")
@@ -238,6 +281,31 @@ def test_live_entry_preview_endpoint_has_no_network_calls(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     assert response.json()["decision_count"] == 1
+
+
+def test_live_entry_preview_uses_credential_readiness_decision(tmp_path, monkeypatch) -> None:
+    store = ObservationStore(str(tmp_path / "observations.sqlite3"))
+    store.insert_many([_record(symbol="BTC", long_exchange="binance", short_exchange="okx", target_notional_usd=1000.0)])
+    monkeypatch.setattr("app.main.observation_store", store)
+    monkeypatch.setattr("app.main.settings.execution_policy_execution_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_policy_allow_test_execution", True, raising=False)
+    monkeypatch.setattr("app.main.settings.execution_policy_allowed_venues", ["binance", "okx"], raising=False)
+    monkeypatch.setattr("app.main.settings.live_execution_enabled", True, raising=False)
+    monkeypatch.setattr("app.main.settings.live_execution_allowed_venues", ["binance", "okx"], raising=False)
+    monkeypatch.setattr("app.main.settings.execution_credential_readiness_enabled", True, raising=False)
+    monkeypatch.setattr(
+        "app.main.settings.execution_credential_fixture_configured_venues",
+        {"binance": True, "okx": True},
+        raising=False,
+    )
+
+    client = TestClient(app)
+    response = client.post("/api/v1/execution/live-entry-preview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["decision_count"] == 1
+    assert "credential_readiness_blocked" not in payload["items"][0]["block_reasons"]
 
 
 def test_observations_schema_is_unchanged_for_live_entry_workflow(tmp_path) -> None:

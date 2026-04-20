@@ -5,6 +5,7 @@ from app.execution_adapters.registry import get_execution_adapter
 from app.models.execution import (
     ExecutionBundlePreflight,
     ExecutionCandidate,
+    ExecutionCredentialReadinessDecision,
     ExecutionPolicyDecision,
     LiveExecutionEntryConfigSnapshot,
     LiveExecutionEntryResult,
@@ -30,20 +31,23 @@ def _is_adapter_stub_only(venue_id: str) -> bool:
     return module_name == "app.execution_adapters.stubs"
 
 
-def _credentials_configured_for_candidate(candidate: ExecutionCandidate) -> bool:
-    _ = candidate
-    return False
-
-
 def evaluate_live_execution_entry_decision(
     *,
     candidate: ExecutionCandidate,
     preflight: ExecutionBundlePreflight,
     policy_decision: ExecutionPolicyDecision,
+    credential_readiness_decision: ExecutionCredentialReadinessDecision,
     config: LiveExecutionEntryConfigSnapshot,
 ) -> LiveExecutionEntryResult:
     block_reasons: list[str] = []
-    warnings = sorted({*preflight.warnings, *policy_decision.warnings})
+    warnings = sorted(
+        {
+            *preflight.warnings,
+            *policy_decision.warnings,
+            *credential_readiness_decision.warnings,
+            *(f"credential_readiness:{reason}" for reason in credential_readiness_decision.block_reasons),
+        }
+    )
 
     if not config.live_execution_enabled:
         block_reasons.append("live_execution_not_enabled")
@@ -69,8 +73,8 @@ def evaluate_live_execution_entry_decision(
     if _is_adapter_stub_only(candidate.long_exchange) or _is_adapter_stub_only(candidate.short_exchange):
         block_reasons.append("adapter_is_stub_only")
 
-    if not _credentials_configured_for_candidate(candidate):
-        block_reasons.append("credentials_not_configured")
+    if credential_readiness_decision.credential_readiness_status != "allowed":
+        block_reasons.append("credential_readiness_blocked")
 
     if not block_reasons:
         block_reasons.append("unsupported_live_execution_path")
@@ -98,6 +102,7 @@ def evaluate_live_execution_entry_decisions(
     candidates: list[ExecutionCandidate],
     preflight_bundles: list[ExecutionBundlePreflight],
     policy_decisions: list[ExecutionPolicyDecision],
+    credential_readiness_decisions: list[ExecutionCredentialReadinessDecision],
     config: LiveExecutionEntryConfigSnapshot,
 ) -> list[LiveExecutionEntryResult]:
     return [
@@ -105,7 +110,14 @@ def evaluate_live_execution_entry_decisions(
             candidate=candidate,
             preflight=preflight,
             policy_decision=policy_decision,
+            credential_readiness_decision=credential_readiness_decision,
             config=config,
         )
-        for candidate, preflight, policy_decision in zip(candidates, preflight_bundles, policy_decisions, strict=False)
+        for candidate, preflight, policy_decision, credential_readiness_decision in zip(
+            candidates,
+            preflight_bundles,
+            policy_decisions,
+            credential_readiness_decisions,
+            strict=False,
+        )
     ]
