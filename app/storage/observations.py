@@ -165,6 +165,48 @@ class ObservationStore:
                 ON dry_run_execution_attempts(bundle_status, created_at_ms DESC, id DESC)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS live_submit_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at_ms INTEGER NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    route_key TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    live_submit_status TEXT NOT NULL,
+                    block_reasons_json TEXT NOT NULL,
+                    submitted_leg_count INTEGER NOT NULL,
+                    accepted_leg_count INTEGER NOT NULL,
+                    long_leg_json TEXT NOT NULL,
+                    short_leg_json TEXT NOT NULL,
+                    raw_attempt_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_live_submit_attempts_created_at
+                ON live_submit_attempts(created_at_ms DESC, id DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_live_submit_attempts_symbol_created_at
+                ON live_submit_attempts(symbol, created_at_ms DESC, id DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_live_submit_attempts_route_key_created_at
+                ON live_submit_attempts(route_key, created_at_ms DESC, id DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_live_submit_attempts_status_created_at
+                ON live_submit_attempts(live_submit_status, created_at_ms DESC, id DESC)
+                """
+            )
 
     def insert_many(self, observations: list[ObservationRecord]) -> int:
         if not observations:
@@ -551,6 +593,84 @@ class ObservationStore:
             ).fetchall()
         return [self._row_to_dry_run_execution_attempt(row) for row in rows]
 
+    def insert_live_submit_attempts(self, attempts: list[dict[str, object]]) -> int:
+        if not attempts:
+            return 0
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO live_submit_attempts (
+                    created_at_ms,
+                    attempt_id,
+                    route_key,
+                    symbol,
+                    live_submit_status,
+                    block_reasons_json,
+                    submitted_leg_count,
+                    accepted_leg_count,
+                    long_leg_json,
+                    short_leg_json,
+                    raw_attempt_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        int(item.get("created_at_ms") or 0),
+                        str(item.get("attempt_id") or ""),
+                        str(item.get("route_key") or ""),
+                        str(item.get("symbol") or ""),
+                        str(item.get("live_submit_status") or ""),
+                        json.dumps(item.get("block_reasons") or []),
+                        int(item.get("submitted_leg_count") or 0),
+                        int(item.get("accepted_leg_count") or 0),
+                        json.dumps(item.get("long_leg") or {}),
+                        json.dumps(item.get("short_leg") or {}),
+                        json.dumps(item),
+                    )
+                    for item in attempts
+                ],
+            )
+        return len(attempts)
+
+    def latest_live_submit_attempts(
+        self,
+        *,
+        limit: int = 100,
+        symbols: list[str] | None = None,
+        route_keys: list[str] | None = None,
+        live_submit_status: str | None = None,
+    ) -> list[dict[str, object]]:
+        predicates: list[str] = []
+        params: list[object] = []
+        if symbols:
+            placeholders = ",".join(["?"] * len(symbols))
+            predicates.append(f"UPPER(symbol) IN ({placeholders})")
+            params.extend([item.upper() for item in symbols])
+        if route_keys:
+            placeholders = ",".join(["?"] * len(route_keys))
+            predicates.append(f"route_key IN ({placeholders})")
+            params.extend(route_keys)
+        if live_submit_status:
+            predicates.append("live_submit_status = ?")
+            params.append(live_submit_status)
+
+        where_sql = ""
+        if predicates:
+            where_sql = f"WHERE {' AND '.join(predicates)}"
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM live_submit_attempts
+                {where_sql}
+                ORDER BY created_at_ms DESC, id DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+        return [self._row_to_live_submit_attempt(row) for row in rows]
+
     def _row_to_alert_event(self, row: sqlite3.Row) -> dict[str, object]:
         raw_gate = row["replay_passes_min_trade_gate"]
         return {
@@ -668,6 +788,21 @@ class ObservationStore:
         raw_attempt["symbol"] = row["symbol"]
         raw_attempt["bundle_status"] = row["bundle_status"]
         raw_attempt["failure_reasons"] = json.loads(row["failure_reasons_json"] or "[]")
+        raw_attempt["submitted_leg_count"] = row["submitted_leg_count"]
+        raw_attempt["accepted_leg_count"] = row["accepted_leg_count"]
+        raw_attempt["long_leg"] = json.loads(row["long_leg_json"] or "{}")
+        raw_attempt["short_leg"] = json.loads(row["short_leg_json"] or "{}")
+        return raw_attempt
+
+    def _row_to_live_submit_attempt(self, row: sqlite3.Row) -> dict[str, object]:
+        raw_attempt = json.loads(row["raw_attempt_json"] or "{}")
+        raw_attempt["id"] = row["id"]
+        raw_attempt["created_at_ms"] = row["created_at_ms"]
+        raw_attempt["attempt_id"] = row["attempt_id"]
+        raw_attempt["route_key"] = row["route_key"]
+        raw_attempt["symbol"] = row["symbol"]
+        raw_attempt["live_submit_status"] = row["live_submit_status"]
+        raw_attempt["block_reasons"] = json.loads(row["block_reasons_json"] or "[]")
         raw_attempt["submitted_leg_count"] = row["submitted_leg_count"]
         raw_attempt["accepted_leg_count"] = row["accepted_leg_count"]
         raw_attempt["long_leg"] = json.loads(row["long_leg_json"] or "{}")
