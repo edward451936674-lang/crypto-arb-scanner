@@ -206,6 +206,19 @@ class AdapterExecutionResult(BaseModel):
 
 ExecutionPreflightStatus = Literal["ready", "blocked"]
 ExecutionPolicyStatus = Literal["allowed", "blocked"]
+ExecutionAccountStateStatus = Literal["allowed", "blocked"]
+ExecutionAccountStateBlockReason = Literal[
+    "execution_account_state_disabled",
+    "target_notional_missing",
+    "global_capacity_missing",
+    "symbol_capacity_missing",
+    "long_exchange_capacity_missing",
+    "short_exchange_capacity_missing",
+    "target_notional_exceeds_global_capacity",
+    "target_notional_exceeds_symbol_capacity",
+    "target_notional_exceeds_long_exchange_capacity",
+    "target_notional_exceeds_short_exchange_capacity",
+]
 ExecutionPolicyBlockReason = Literal[
     "execution_globally_disabled",
     "preflight_not_ready",
@@ -261,6 +274,33 @@ class ExecutionPolicyConfigSnapshot(BaseModel):
     allowed_symbols: list[str] = Field(default_factory=list)
     blocked_symbols: list[str] = Field(default_factory=list)
     max_target_notional_usd: float | None = None
+
+
+class ExecutionAccountStateSnapshot(BaseModel):
+    execution_account_state_enabled: bool = False
+    execution_account_state_fixture_total_notional_usd: float | None = None
+    execution_account_state_fixture_remaining_total_notional_usd: float | None = None
+    execution_account_state_fixture_remaining_symbol_notional_usd: dict[str, float] = Field(default_factory=dict)
+    execution_account_state_fixture_remaining_long_exchange_notional_usd: dict[str, float] = Field(default_factory=dict)
+    execution_account_state_fixture_remaining_short_exchange_notional_usd: dict[str, float] = Field(default_factory=dict)
+
+
+class ExecutionAccountStateDecision(BaseModel):
+    route_key: str
+    symbol: str
+    long_exchange: str
+    short_exchange: str
+    target_notional_usd: float | None = None
+    account_state_status: ExecutionAccountStateStatus = "blocked"
+    allowed: bool = False
+    block_reasons: list[ExecutionAccountStateBlockReason] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    remaining_global_notional_usd: float | None = None
+    remaining_symbol_notional_usd: float | None = None
+    remaining_long_exchange_notional_usd: float | None = None
+    remaining_short_exchange_notional_usd: float | None = None
+    preview_only: bool = True
+    is_live: bool = False
 
 
 

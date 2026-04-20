@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     execution_account_state_fixture_remaining_symbol_cap_pct: float | None = None
     execution_account_state_fixture_remaining_long_exchange_cap_pct: float | None = None
     execution_account_state_fixture_remaining_short_exchange_cap_pct: float | None = None
+    execution_account_state_enabled: bool = False
+    execution_account_state_fixture_total_notional_usd: float | None = None
+    execution_account_state_fixture_remaining_total_notional_usd: float | None = None
+    execution_account_state_fixture_remaining_symbol_notional_usd: dict[str, float] = {}
+    execution_account_state_fixture_remaining_long_exchange_notional_usd: dict[str, float] = {}
+    execution_account_state_fixture_remaining_short_exchange_notional_usd: dict[str, float] = {}
     execution_policy_execution_enabled: bool = False
     execution_policy_allow_test_execution: bool = False
     execution_policy_allowed_venues: list[str] = ["binance", "okx", "hyperliquid", "lighter"]
