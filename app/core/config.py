@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     execution_policy_allowed_symbols: list[str] = []
     execution_policy_blocked_symbols: list[str] = []
     execution_policy_max_target_notional_usd: float | None = None
+    live_execution_enabled: bool = False
+    live_execution_allowed_venues: list[str] = []
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     observations_db_path: str = "./data/observations.sqlite3"

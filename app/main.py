@@ -57,6 +57,10 @@ from app.services.execution_policy import (
     evaluate_execution_policy_decisions,
     resolve_execution_policy_config_snapshot,
 )
+from app.services.live_execution_entry import (
+    evaluate_live_execution_entry_decisions,
+    resolve_live_execution_entry_config_snapshot,
+)
 from app.services.execution_dry_run_submit import simulate_dry_run_execution_attempts
 from app.execution_adapters.registry import get_execution_adapter
 from app.services.research_summary import ResearchSummaryService
@@ -791,6 +795,80 @@ async def get_execution_policy_preview(
         "is_live": False,
         "config": config_snapshot.model_dump(),
         "items": [item.model_dump() for item in decisions],
+    }
+
+
+
+
+@app.post("/api/v1/execution/live-entry-preview")
+async def post_execution_live_entry_preview(
+    payload: dict[str, object] | None = Body(default=None),
+    symbols: str | None = Query(default=None, description="Comma separated base symbols, e.g. BTC,ETH,SOL"),
+    route_keys: list[str] | None = Query(
+        default=None,
+        description="Repeat route_keys to filter preview to specific execution routes",
+    ),
+    top_n: int = Query(default=10, ge=1, le=500),
+    only_actionable: bool = Query(default=False),
+    include_test: bool = Query(default=False),
+) -> dict[str, object]:
+    payload = payload or {}
+    payload_symbols = payload.get("symbols")
+    payload_top_n = payload.get("top_n")
+    payload_only_actionable = payload.get("only_actionable")
+    payload_include_test = payload.get("include_test")
+    payload_route_keys = payload.get("route_keys")
+
+    resolved_symbols = symbols if payload_symbols is None else str(payload_symbols)
+    resolved_top_n = int(_coerce_float(top_n if payload_top_n is None else payload_top_n, default=10.0))
+    resolved_top_n = min(500, max(1, resolved_top_n))
+    resolved_only_actionable = _coerce_bool(
+        only_actionable if payload_only_actionable is None else payload_only_actionable,
+        default=False,
+    )
+    resolved_include_test = _coerce_bool(include_test if payload_include_test is None else payload_include_test, default=False)
+
+    query_route_keys = [str(item) for item in (route_keys or []) if str(item)]
+    body_route_keys = [str(item) for item in payload_route_keys] if isinstance(payload_route_keys, list) else []
+    route_key_set = {item for item in [*query_route_keys, *body_route_keys] if item}
+
+    candidates = list_execution_candidates(
+        symbols=resolved_symbols,
+        top_n=resolved_top_n,
+        only_actionable=resolved_only_actionable,
+        include_test=resolved_include_test,
+    )
+    selected_candidates = candidates
+    if route_key_set:
+        selected_candidates = [item for item in candidates if str(item.get("route_key") or "") in route_key_set]
+
+    candidate_models = [ExecutionCandidate.model_validate(item) for item in selected_candidates]
+    preflight_bundles = await evaluate_execution_preflight_bundles(candidate_models)
+    policy_config = resolve_execution_policy_config_snapshot(settings)
+    policy_decisions = evaluate_execution_policy_decisions(
+        candidates=candidate_models,
+        preflight_bundles=preflight_bundles,
+        config=policy_config,
+    )
+    live_entry_config = resolve_live_execution_entry_config_snapshot(settings)
+    live_entry_results = evaluate_live_execution_entry_decisions(
+        candidates=candidate_models,
+        preflight_bundles=preflight_bundles,
+        policy_decisions=policy_decisions,
+        config=live_entry_config,
+    )
+    allowed_count = sum(1 for item in live_entry_results if item.allowed_to_enter_live_path)
+    blocked_count = len(live_entry_results) - allowed_count
+
+    return {
+        "candidate_count": len(candidates),
+        "decision_count": len(live_entry_results),
+        "allowed_count": allowed_count,
+        "blocked_count": blocked_count,
+        "preview_only": True,
+        "is_live": False,
+        "config": live_entry_config.model_dump(),
+        "items": [item.model_dump() for item in live_entry_results],
     }
 
 
