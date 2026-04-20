@@ -420,3 +420,59 @@ class DryRunExecutionAttempt(BaseModel):
     preview_only: bool = True
     is_live: bool = False
     created_at_ms: int
+
+
+LiveSubmitStatus = Literal["blocked", "armed", "submitted", "failed"]
+LiveSubmitBlockReason = Literal[
+    "preflight_blocked",
+    "policy_blocked",
+    "account_state_blocked",
+    "credential_readiness_blocked",
+    "live_entry_blocked",
+    "guarded_live_submit_disabled",
+    "arm_token_required",
+    "arm_token_mismatch",
+    "unsupported_live_submit_path",
+    "no_live_adapter_implemented",
+]
+
+
+class LiveSubmitConfigSnapshot(BaseModel):
+    guarded_live_submit_enabled: bool = False
+    guarded_live_submit_require_arm_token: bool = True
+    guarded_live_submit_arm_token: str = ""
+    guarded_live_submit_persist_attempts: bool = True
+
+
+class LiveSubmitLegAttempt(BaseModel):
+    venue_id: str
+    side: Literal["buy", "sell"]
+    symbol: str
+    route_key: str
+    quantity: float | None = None
+    leg_index: Literal[0, 1]
+    submit_sequence: Literal[1, 2]
+    submit_order: Literal["first", "second"]
+    supported_venue: bool = False
+    attempted_live_submit: bool = False
+    submit_status: LiveSubmitStatus = "blocked"
+    submit_message: str | None = None
+    accepted: bool = False
+    validation_errors: list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
+
+
+class LiveSubmitAttempt(BaseModel):
+    attempt_id: str
+    route_key: str
+    symbol: str
+    long_leg: LiveSubmitLegAttempt
+    short_leg: LiveSubmitLegAttempt
+    live_submit_status: LiveSubmitStatus = "blocked"
+    block_reasons: list[LiveSubmitBlockReason] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    submitted_leg_count: int = 0
+    accepted_leg_count: int = 0
+    preview_only: bool = True
+    is_live: bool = False
+    created_at_ms: int

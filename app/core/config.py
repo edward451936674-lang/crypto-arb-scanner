@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     execution_policy_max_target_notional_usd: float | None = None
     live_execution_enabled: bool = False
     live_execution_allowed_venues: list[str] = []
+    guarded_live_submit_enabled: bool = False
+    guarded_live_submit_require_arm_token: bool = True
+    guarded_live_submit_arm_token: str = ""
+    guarded_live_submit_persist_attempts: bool = True
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     observations_db_path: str = "./data/observations.sqlite3"
