@@ -484,6 +484,10 @@ class LiveSubmitLegAttempt(BaseModel):
     block_reasons: list[str] = Field(default_factory=list)
     validation_errors: list[str] = Field(default_factory=list)
     validation_warnings: list[str] = Field(default_factory=list)
+    final_quantity: str | None = None
+    final_price: str | None = None
+    final_client_order_id: str | None = None
+    normalization_applied: bool = False
 
 
 class LiveSubmitAttempt(BaseModel):

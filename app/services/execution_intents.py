@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import re
+
 from app.models.execution import ExecutionCandidate, OrderIntent
 from app.services.execution_quantity_resolver import quantity_resolver
+
+
+def _pilot_client_order_id(route_key: str, leg: str) -> str:
+    sanitized = re.sub(r"[^.A-Z:/a-z0-9_-]", "_", str(route_key or ""))
+    return f"{sanitized[:28]}:{leg}"
 
 
 def candidate_to_order_intents(candidate: ExecutionCandidate) -> list[OrderIntent]:
@@ -35,7 +42,7 @@ def candidate_to_order_intents(candidate: ExecutionCandidate) -> list[OrderInten
         price=candidate.entry_reference_price_long,
         time_in_force=None,
         reduce_only=False,
-        client_order_id=f"{candidate.route_key}:long",
+        client_order_id=_pilot_client_order_id(candidate.route_key, "long"),
         route_key=candidate.route_key,
         target_position_pct=candidate.target_position_pct,
         target_notional_usd=candidate.target_notional_usd,
@@ -64,7 +71,7 @@ def candidate_to_order_intents(candidate: ExecutionCandidate) -> list[OrderInten
         price=candidate.entry_reference_price_short,
         time_in_force=None,
         reduce_only=False,
-        client_order_id=f"{candidate.route_key}:short",
+        client_order_id=_pilot_client_order_id(candidate.route_key, "short"),
         route_key=candidate.route_key,
         target_position_pct=candidate.target_position_pct,
         target_notional_usd=candidate.target_notional_usd,

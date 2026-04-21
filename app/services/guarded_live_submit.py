@@ -185,6 +185,14 @@ async def _build_attempt(
             if result.translation is not None:
                 leg_attempt.validation_errors = list(result.translation.preview.validation_errors)
                 leg_attempt.validation_warnings = list(result.translation.preview.validation_warnings)
+                leg_attempt.final_quantity = str(result.translation.preview.metadata.get("final_quantity") or "") or None
+                leg_attempt.final_price = str(result.translation.preview.metadata.get("final_price") or "") or None
+                leg_attempt.final_client_order_id = (
+                    str(result.translation.preview.metadata.get("final_client_order_id") or "") or None
+                )
+                leg_attempt.normalization_applied = bool(
+                    result.translation.preview.metadata.get("normalization_applied", False)
+                )
             if not result.accepted:
                 leg_attempt.block_reasons.append("live_adapter_submit_failed")
         except Exception as exc:  # noqa: BLE001
