@@ -214,7 +214,21 @@ def test_live_submit_armed_path_can_reach_binance_pilot_adapter_with_mocked_tran
     monkeypatch.setenv("ARB_BINANCE_API_KEY", "a" * 16)
     monkeypatch.setenv("ARB_BINANCE_API_SECRET", "b" * 32)
 
-    async def fake_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+    async def fake_request(self, *, method: str, url: str, headers: dict[str, str], params: dict[str, object]):  # type: ignore[no-untyped-def]
+        if url.endswith("/fapi/v1/exchangeInfo"):
+            return {
+                "symbols": [
+                    {
+                        "symbol": "BTC",
+                        "orderTypes": ["MARKET", "LIMIT"],
+                        "filters": [
+                            {"filterType": "LOT_SIZE", "minQty": "0.001", "stepSize": "0.001"},
+                            {"filterType": "MARKET_LOT_SIZE", "minQty": "0.001", "stepSize": "0.001"},
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.1"},
+                        ],
+                    }
+                ]
+            }
         return {"status": "NEW", "symbol": "BTC", "orderId": 1, "origQty": "1", "executedQty": "0"}
 
     monkeypatch.setattr("app.execution_adapters.binance_live.HttpxBinanceTransport.request", fake_request)
@@ -227,6 +241,8 @@ def test_live_submit_armed_path_can_reach_binance_pilot_adapter_with_mocked_tran
     assert payload["submitted_count"] == 1
     assert payload["items"][0]["real_adapter_path_attempted"] is True
     assert payload["items"][0]["accepted_leg_count"] == 2
+    assert payload["items"][0]["long_leg"]["final_client_order_id"]
+    assert payload["items"][0]["long_leg"]["normalization_applied"] is False
 
 
 def test_live_submit_mixed_venue_paths_fail_with_explicit_reason(tmp_path, monkeypatch) -> None:

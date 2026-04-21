@@ -52,6 +52,23 @@
 - `ARB_GUARDED_LIVE_SUBMIT_ENABLED=true`
 - 若启用 arm token 校验：提供匹配的 `arm_token`
 
+### Binance pilot submit hardening（新增）
+
+Binance pilot 下单路径现在会在签名提交前，先基于 `exchangeInfo` 做规则加载与校验（仅限 Binance 官方语义）：
+
+- 规则来源：`PRICE_FILTER.tickSize`、`LOT_SIZE(minQty/stepSize)`、`MARKET_LOT_SIZE(minQty/stepSize)`、以及符号可用 `orderTypes`（若存在）。
+- `MARKET`：数量按 `MARKET_LOT_SIZE`（若缺失则回退 `LOT_SIZE`）做保守 floor 对齐与最小数量校验。
+- `LIMIT`：数量按 `LOT_SIZE` 对齐；价格按 `PRICE_FILTER.tickSize` 做保守 floor 对齐。
+- 仅当规则里存在 `MIN_NOTIONAL` / `minNotional` 时，才执行最小名义金额校验。
+- 归一化不会被隐藏：若价格/数量被调整，会在结果与 live submit ledger 中显式记录 `normalization_applied` 与 warning。
+- `client_order_id` 现在走 Binance 保守约束：缺失则生成短且稳定的 pilot id；明显非法或超长会在提交前阻断。
+
+仍然保持有意收敛范围：
+
+- 不新增 venue。
+- 不引入抽象风险框架扩展。
+- 不扩展为全路由 live orchestration（仍仅 Binance 窄路径试点）。
+
 ### What is intentionally not supported yet
 
 - 多 venue live submit 编排
