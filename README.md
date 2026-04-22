@@ -38,8 +38,11 @@
 
 - `ARB_BINANCE_API_KEY`
 - `ARB_BINANCE_API_SECRET`
-- 可选：`ARB_BINANCE_TRADE_BASE_URL`（默认 `https://fapi.binance.com`）
+- `ARB_BINANCE_EXECUTION_ENVIRONMENT`：`testnet` / `live`（默认 `testnet`）
+- 可选：`ARB_BINANCE_TESTNET_BASE_URL`（默认 `https://testnet.binancefuture.com`）
+- 可选：`ARB_BINANCE_LIVE_BASE_URL`（默认 `https://fapi.binance.com`）
 - 可选：`ARB_BINANCE_RECV_WINDOW_MS`（默认 `5000`）
+- 可选：`ARB_BINANCE_PILOT_ALLOWED_SYMBOLS`（示例：`BTC,ETH`）
 
 凭证只从配置/环境读取，不会打印或持久化 secret。
 
@@ -51,6 +54,7 @@
 
 - `ARB_GUARDED_LIVE_SUBMIT_ENABLED=true`
 - 若启用 arm token 校验：提供匹配的 `arm_token`
+- 可按环境分离 arm token：`ARB_GUARDED_LIVE_SUBMIT_ARM_TOKEN_TESTNET` / `ARB_GUARDED_LIVE_SUBMIT_ARM_TOKEN_LIVE`
 
 ### Binance pilot submit hardening（新增）
 
@@ -68,6 +72,33 @@ Binance pilot 下单路径现在会在签名提交前，先基于 `exchangeInfo`
 - 不新增 venue。
 - 不引入抽象风险框架扩展。
 - 不扩展为全路由 live orchestration（仍仅 Binance 窄路径试点）。
+
+### Binance pilot readiness checklist（v1）
+
+新增只读预览接口：`POST /api/v1/execution/binance-pilot-readiness-preview`
+
+用途：
+- 在不触发真实下单的前提下，返回 Binance pilot release checklist。
+- 输出 `ready/status`、结构化 `checklist_items`、机器可读 `block_reasons`，不隐藏失败项。
+
+检查项包括：
+- execution 全局开关与（必要时）live 开关
+- 环境解析（testnet/live）与 endpoint 安全分离
+- arm token（含环境不匹配）
+- 凭证 readiness / account-state readiness / policy readiness
+- exchangeInfo 规则准备度、symbol allowlist、route shape（含 mixed venue 阻断）
+
+### Intentional unsupported scope（保持不变）
+- mixed venue real execution 仍显式阻断
+- 非 `binance->binance` 的真实 submit 路径不支持
+- unsupported order/route shape 仍返回机器可读 block reason
+- 不扩展到新 venue / 不新增 dashboard UI
+
+### Safe ledger verification
+
+- 通过 `POST /api/v1/execution/live-submit` 可记录 live submit attempts ledger（仍受 gate 与 arm 约束）。
+- 用 `GET /api/v1/execution/live-submit-attempts` 审计 submit 是否被阻断、阻断原因与每腿状态。
+- 默认测试应继续使用 mocked transport，避免真实网络调用。
 
 ### What is intentionally not supported yet
 

@@ -16,6 +16,10 @@ class Settings(BaseSettings):
 
     binance_base_url: str = "https://fapi.binance.com"
     binance_trade_base_url: str = "https://fapi.binance.com"
+    binance_execution_environment: str = "testnet"
+    binance_testnet_base_url: str = "https://testnet.binancefuture.com"
+    binance_live_base_url: str = "https://fapi.binance.com"
+    binance_pilot_allowed_symbols: list[str] = []
     binance_api_key: str = ""
     binance_api_secret: str = ""
     binance_recv_window_ms: int = 5000
@@ -66,6 +70,8 @@ class Settings(BaseSettings):
     guarded_live_submit_enabled: bool = False
     guarded_live_submit_require_arm_token: bool = True
     guarded_live_submit_arm_token: str = ""
+    guarded_live_submit_arm_token_testnet: str = ""
+    guarded_live_submit_arm_token_live: str = ""
     guarded_live_submit_persist_attempts: bool = True
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
