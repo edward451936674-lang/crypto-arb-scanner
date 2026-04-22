@@ -122,6 +122,29 @@ def test_binance_place_order_uses_mocked_transport(monkeypatch) -> None:
     assert "signature" in transport.calls[1]["params"]
 
 
+def test_binance_testnet_environment_resolves_to_testnet_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("ARB_BINANCE_API_KEY", "a" * 16)
+    monkeypatch.setenv("ARB_BINANCE_API_SECRET", "b" * 32)
+    settings = Settings(
+        binance_execution_environment="testnet",
+        binance_testnet_base_url="https://testnet.binancefuture.com",
+        binance_live_base_url="https://fapi.binance.com",
+    )
+    transport = MockTransport(
+        {
+            "exchangeInfo": _exchange_info_payload(),
+            "place_order": {"status": "NEW", "symbol": "BTCUSDT", "orderId": 7, "origQty": "1", "executedQty": "0"},
+        }
+    )
+    adapter = BinanceExecutionAdapterLive(settings=settings, transport=transport, clock_ms=lambda: 123456)
+    asyncio.run(
+        adapter.place_order(
+            OrderIntent(venue_id="binance", symbol="BTCUSDT", side="buy", order_type="market", quantity=1.0)
+        )
+    )
+    assert transport.calls[0]["url"].startswith("https://testnet.binancefuture.com/")
+
+
 def test_binance_cancel_order_uses_mocked_transport(monkeypatch) -> None:
     monkeypatch.setenv("ARB_BINANCE_API_KEY", "a" * 16)
     monkeypatch.setenv("ARB_BINANCE_API_SECRET", "b" * 32)

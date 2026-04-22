@@ -30,6 +30,11 @@ from app.services.execution_policy import (
     resolve_execution_policy_config_snapshot,
 )
 from app.services.execution_preflight import evaluate_execution_preflight_bundles
+from app.services.binance_pilot import (
+    evaluate_arm_token_for_environment,
+    evaluate_binance_environment_block_reasons,
+    resolve_binance_pilot_symbol_allowlist,
+)
 from app.services.live_execution_entry import (
     evaluate_live_execution_entry_decisions,
     resolve_live_execution_entry_config_snapshot,
@@ -109,17 +114,17 @@ async def _build_attempt(
     if not config.guarded_live_submit_enabled:
         block_reasons.append("guarded_live_submit_disabled")
 
-    if config.guarded_live_submit_require_arm_token:
-        if not request_arm_token:
-            block_reasons.append("arm_token_required")
-        elif request_arm_token != config.guarded_live_submit_arm_token:
-            block_reasons.append("arm_token_mismatch")
+    block_reasons.extend(evaluate_arm_token_for_environment(settings=settings, request_arm_token=request_arm_token))
+    block_reasons.extend(evaluate_binance_environment_block_reasons(settings))
 
     long_leg = _leg_attempt_from_preflight(preflight.long_leg, submit_status="blocked", submit_message="blocked")
     short_leg = _leg_attempt_from_preflight(preflight.short_leg, submit_status="blocked", submit_message="blocked")
 
     if candidate.long_exchange.lower() != candidate.short_exchange.lower():
         block_reasons.append("mixed_live_venue_path_not_supported_yet")
+    allowlisted_symbols = set(resolve_binance_pilot_symbol_allowlist(settings))
+    if allowlisted_symbols and candidate.symbol.upper() not in allowlisted_symbols:
+        block_reasons.append("binance_symbol_not_in_pilot_allowlist")
 
     if block_reasons:
         return LiveSubmitAttempt(

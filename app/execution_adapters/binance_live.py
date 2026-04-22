@@ -29,6 +29,7 @@ from app.models.execution import (
     VenueRequestPreview,
     VenueTranslationResult,
 )
+from app.services.binance_pilot import resolve_binance_environment_mode, resolve_binance_trade_base_url
 
 
 class BinanceTransport(Protocol):
@@ -187,7 +188,8 @@ class BinanceExecutionAdapterLive(BaseExecutionAdapter):
         self.settings = settings or get_settings()
         self.transport = transport or HttpxBinanceTransport()
         self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
-        self.base_url = str(getattr(self.settings, "binance_trade_base_url", "") or self.settings.binance_base_url).rstrip("/")
+        self.environment_mode = resolve_binance_environment_mode(self.settings)
+        self.base_url = resolve_binance_trade_base_url(self.settings)
         self.recv_window = int(getattr(self.settings, "binance_recv_window_ms", 5000) or 5000)
         self.rule_loader = rule_loader or ExchangeInfoBinanceRuleLoader(base_url=self.base_url, transport=self.transport)
 
@@ -264,6 +266,7 @@ class BinanceExecutionAdapterLive(BaseExecutionAdapter):
         preview.validation_warnings = sorted(set(validation_warnings))
         metadata.update(
             {
+                "environment_mode": self.environment_mode,
                 "normalization_applied": normalization_applied,
                 "final_quantity": preview.payload.get("quantity"),
                 "final_price": preview.payload.get("price"),
